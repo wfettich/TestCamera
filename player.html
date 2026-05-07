@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Stream — Relay</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a1a;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        h1 { margin-bottom: 20px; font-weight: 300; }
+        #video-container {
+            width: 90vw;
+            max-width: 1280px;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        video { width: 100%; display: block; }
+        #status-bar {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #status { color: #888; font-size: 14px; }
+        #state-pill {
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            background: #333;
+            color: #aaa;
+        }
+        #state-pill.connecting { background: #664400; color: #ffaa44; }
+        #state-pill.connected  { background: #004422; color: #44cc88; }
+        #state-pill.failed     { background: #440022; color: #ff6688; }
+        #retry-btn {
+            margin-top: 16px;
+            padding: 8px 24px;
+            border: none;
+            border-radius: 8px;
+            background: #0a84ff;
+            color: #fff;
+            font-size: 15px;
+            cursor: pointer;
+            display: none;
+        }
+        #camera-id-error {
+            margin-top: 32px;
+            padding: 16px 24px;
+            background: #440022;
+            border-radius: 8px;
+            color: #ff6688;
+            font-size: 15px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Camera Stream</h1>
+    <div id="video-container">
+        <video id="video" autoplay muted playsinline></video>
+    </div>
+    <div id="status-bar">
+        <span id="state-pill" class="connecting">connecting</span>
+        <span id="status">Starting WebRTC...</span>
+    </div>
+    <button id="retry-btn" onclick="connect(0)">Retry</button>
+    <div id="camera-id-error">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
+
+    <script>
+    (function() {
+        const video   = document.getElementById('video');
+        const status  = document.getElementById('status');
+        const pill    = document.getElementById('state-pill');
+        const retryBtn = document.getElementById('retry-btn');
+        const cameraIdErr = document.getElementById('camera-id-error');
+        const MAX_RETRIES = 3;
+
+        // Extract cameraId from ?cameraId= query parameter.
+        var cameraId = (function() {
+            var params = new URLSearchParams(location.search);
+            return params.get('cameraId') || '';
+        })();
+
+        if (!cameraId) {
+            pill.className = 'failed';
+            pill.textContent = 'no camera';
+            status.textContent = 'Camera ID required';
+            cameraIdErr.style.display = 'block';
+            return;
+        }
+
+        // WebSocket relay server. Override with ?relay= if needed.
+        var relayURL = (function() {
+            var params = new URLSearchParams(location.search);
+            return params.get('relay') || 'wss://relay-lively-ridge-9520.fly.dev';
+        })();
+
+        var ws = null;
+        var assignedPeerId = null;
+
+        function setPill(state) {
+            pill.className = state;
+            pill.textContent = state;
+        }
+
+        function connect(attempt) {
+            retryBtn.style.display = 'none';
+            setPill('connecting');
+            status.textContent = attempt > 0 ? 'Retrying (' + attempt + ')...' : 'Starting WebRTC...';
+            assignedPeerId = null;
+
+            if (ws) {
+                try { ws.close(); } catch(_) {}
+                ws = null;
+            }
+
+            var pc = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.relay.metered.ca:80' },
+                    { urls: 'turn:global.relay.metered.ca:80', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                    { urls: 'turn:global.relay.metered.ca:443', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                ]
+            });
+
+            pc.addTransceiver('video', { direction: 'recvonly' });
+
+            pc.ontrack = function(evt) {
+                if (evt.track.kind === 'video') {
+                    video.srcObject = evt.streams[0] || new MediaStream([evt.track]);
+                    setPill('connected');
+                    status.textContent = 'Connected';
+                }
+            };
+
+            pc.onicecandidate = function(evt) {
+                if (!evt.candidate || !assignedPeerId || !ws) return;
+                ws.send(JSON.stringify({
+                    type: 'ice',
+                    peerId: assignedPeerId,
+                    candidate: evt.candidate.candidate,
+                    sdpMid: evt.candidate.sdpMid,
+                    sdpMLineIndex: evt.candidate.sdpMLineIndex
+                }));
+            };
+
+            pc.onconnectionstatechange = function() {
+                var s = pc.connectionState;
+                status.textContent = 'State: ' + s;
+                if (s === 'connected') {
+                    setPill('connected');
+                } else if (s === 'failed' || s === 'disconnected') {
+                    setPill('failed');
+                    pc.close();
+                    if (attempt < MAX_RETRIES) {
+                        var delay = Math.pow(2, attempt) * 1000;
+                        status.textContent = 'Reconnecting in ' + (delay/1000) + 's...';
+                        setTimeout(function() { connect(attempt + 1); }, delay);
+                    } else {
+                        status.textContent = 'Connection failed after ' + MAX_RETRIES + ' attempts.';
+                        retryBtn.style.display = 'inline-block';
+                    }
+                }
+            };
+
+            // Open WebSocket to relay.
+            var socketUrl = relayURL + '/?role=viewer&cameraId=' + encodeURIComponent(cameraId);
+            ws = new WebSocket(socketUrl);
+
+            ws.onopen = function() {
+                status.textContent = 'WebSocket open; creating offer...';
+                pc.createOffer()
+                    .then(function(offer) { return pc.setLocalDescription(offer); })
+                    .then(function() {
+                        ws.send(JSON.stringify({
+                            type: 'offer',
+                            peerId: 'viewer-' + Math.random().toString(36).slice(2, 10),
+                            sdp: pc.localDescription.sdp
+                        }));
+                        status.textContent = 'Offer sent; waiting for answer...';
+                    })
+                    .catch(function(e) {
+                        console.error('Offer error:', e);
+                        setPill('failed');
+                        status.textContent = 'Offer error: ' + e.message;
+                    });
+            };
+
+            ws.onmessage = function(evt) {
+                var msg;
+                try { msg = JSON.parse(evt.data); } catch(e) { return; }
+
+                if (msg.type === 'answer' && msg.sdp) {
+                    assignedPeerId = msg.peerId;
+                    pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
+                        .then(function() {
+                            status.textContent = 'Answer received; ICE connecting...';
+                        })
+                        .catch(function(e) {
+                            console.error('setRemoteDescription error:', e);
+                        });
+                } else if (msg.type === 'ice' && msg.candidate) {
+                    pc.addIceCandidate(new RTCIceCandidate({
+                        candidate: msg.candidate,
+                        sdpMid: msg.sdpMid || '0',
+                        sdpMLineIndex: msg.sdpMLineIndex || 0
+                    })).catch(function(e) { console.warn('addIceCandidate error:', e); });
+                }
+            };
+
+            ws.onerror = function(e) {
+                console.error('WebSocket error:', e);
+                status.textContent = 'Relay connection error';
+                setPill('failed');
+                pc.close();
+                if (attempt < MAX_RETRIES) {
+                    var delay = Math.pow(2, attempt) * 1000;
+                    status.textContent = 'Relay error. Retrying in ' + (delay/1000) + 's...';
+                    setTimeout(function() { connect(attempt + 1); }, delay);
+                } else {
+                    retryBtn.style.display = 'inline-block';
+                }
+            };
+
+            ws.onclose = function(e) {
+                if (pc.connectionState !== 'connected') {
+                    setPill('failed');
+                    status.textContent = 'Relay closed';
+                    pc.close();
+                    if (attempt < MAX_RETRIES) {
+                        var delay = Math.pow(2, attempt) * 1000;
+                        status.textContent = 'Relay closed. Reconnecting in ' + (delay/1000) + 's...';
+                        setTimeout(function() { connect(attempt + 1); }, delay);
+                    } else {
+                        retryBtn.style.display = 'inline-block';
+                    }
+                }
+            };
+        }
+
+        connect(0);
+    })();
+    </script>
+</body>
+</html>
