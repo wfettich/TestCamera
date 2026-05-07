@@ -169,6 +169,16 @@
             URL.revokeObjectURL(url);
         }
 
+        function autoDownloadLog(reason) {
+            logDebug('AUTO-DOWNLOAD triggered: ' + reason);
+            setTimeout(downloadLog, 500);
+        }
+
+        window.onerror = function(msg, url, line, col, err) {
+            logDebug('JS ERROR: ' + msg + ' at ' + url + ':' + line);
+            autoDownloadLog('uncaught JS error');
+        };
+
         function fmtState(el, val) {
             if (!el) return;
             el.textContent = val;
@@ -223,6 +233,14 @@
                 ws = null;
             }
 
+            // Watchdog: auto-download log if still not connected after 45s
+            var watchdogTimer = setTimeout(function() {
+                if (pill.textContent !== 'connected') {
+                    logDebug('WATCHDOG: still not connected after 45s');
+                    autoDownloadLog('connection timeout (45s)');
+                }
+            }, 45000);
+
             var pc = new RTCPeerConnection({
                 iceServers: [
                     { urls: 'stun:stun.relay.metered.ca:80' },
@@ -262,9 +280,11 @@
                 logDebug('pc.connectionState -> ' + s);
                 fmtState(dbg.pc, s);
                 if (s === 'connected') {
+                    clearTimeout(watchdogTimer);
                     setPill('connected');
                     status.textContent = 'Connected';
                 } else if (s === 'failed' || s === 'disconnected') {
+                    clearTimeout(watchdogTimer);
                     setPill('failed');
                     pc.close();
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
@@ -275,6 +295,7 @@
                     } else {
                         status.textContent = 'Connection failed after ' + MAX_RETRIES + ' attempts.';
                         retryBtn.style.display = 'inline-block';
+                        autoDownloadLog('pc state ' + s + ' after max retries');
                     }
                 }
             };
@@ -362,6 +383,7 @@
                 console.error('WebSocket error:', e);
                 status.textContent = 'Relay connection error';
                 setPill('failed');
+                clearTimeout(watchdogTimer);
                 pc.close();
                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                 if (attempt < MAX_RETRIES) {
@@ -370,6 +392,7 @@
                     setTimeout(function() { connect(attempt + 1); }, delay);
                 } else {
                     retryBtn.style.display = 'inline-block';
+                    autoDownloadLog('ws error after max retries');
                 }
             };
 
@@ -377,6 +400,7 @@
                 if (pc.connectionState !== 'connected') {
                     setPill('failed');
                     status.textContent = 'Relay closed';
+                    clearTimeout(watchdogTimer);
                     pc.close();
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     if (attempt < MAX_RETRIES) {
@@ -385,6 +409,7 @@
                         setTimeout(function() { connect(attempt + 1); }, delay);
                     } else {
                         retryBtn.style.display = 'inline-block';
+                        autoDownloadLog('ws close after max retries');
                     }
                 }
             };
