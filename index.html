@@ -20,11 +20,13 @@
         #video-container {
             width: 90vw;
             max-width: 1280px;
+            max-height: 70vh;
+            aspect-ratio: 16 / 9;
             background: #000;
             border-radius: 8px;
             overflow: hidden;
         }
-        video { width: 100%; display: block; }
+        video { width: 100%; height: 100%; object-fit: cover; display: block; }
         #status-bar {
             margin-top: 10px;
             display: flex;
