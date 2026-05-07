@@ -63,6 +63,32 @@
             font-size: 15px;
             display: none;
         }
+        #debug {
+            margin-top: 16px;
+            width: 90vw;
+            max-width: 1280px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            background: #111;
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #ccc;
+        }
+        #debug .row { display: flex; gap: 16px; flex-wrap: wrap; }
+        #debug .row + .row { margin-top: 6px; }
+        #debug .label { color: #888; min-width: 90px; }
+        #debug .value { color: #fff; }
+        #debug .value.warn { color: #ffaa44; }
+        #debug .value.ok  { color: #44cc88; }
+        #debug .value.err { color: #ff6688; }
+        #debug-log {
+            margin-top: 8px;
+            max-height: 120px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            color: #999;
+        }
     </style>
 </head>
 <body>
@@ -77,6 +103,20 @@
     <button id="retry-btn" onclick="connect(0)">Retry</button>
     <div id="camera-id-error">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
 
+    <div id="debug">
+        <div class="row">
+            <div><span class="label">PC state:</span><span class="value" id="dbg-pc">-</span></div>
+            <div><span class="label">ICE state:</span><span class="value" id="dbg-ice">-</span></div>
+            <div><span class="label">Sig state:</span><span class="value" id="dbg-sig">-</span></div>
+        </div>
+        <div class="row">
+            <div><span class="label">Video track:</span><span class="value" id="dbg-track">none</span></div>
+            <div><span class="label">Bytes rcvd:</span><span class="value" id="dbg-bytes">0</span></div>
+            <div><span class="label">Pkts rcvd:</span><span class="value" id="dbg-pkts">0</span></div>
+        </div>
+        <div id="debug-log"></div>
+    </div>
+
     <script>
     (function() {
         const video   = document.getElementById('video');
@@ -85,6 +125,37 @@
         const retryBtn = document.getElementById('retry-btn');
         const cameraIdErr = document.getElementById('camera-id-error');
         const MAX_RETRIES = 3;
+
+        const dbg = {
+            pc:   document.getElementById('dbg-pc'),
+            ice:  document.getElementById('dbg-ice'),
+            sig:  document.getElementById('dbg-sig'),
+            track: document.getElementById('dbg-track'),
+            bytes: document.getElementById('dbg-bytes'),
+            pkts:  document.getElementById('dbg-pkts'),
+            log:   document.getElementById('debug-log')
+        };
+
+        function logDebug(msg) {
+            var t = new Date().toLocaleTimeString();
+            var line = '[' + t + '] ' + msg;
+            console.log(line);
+            if (dbg.log) {
+                dbg.log.textContent = line + '\n' + dbg.log.textContent;
+                if (dbg.log.textContent.length > 4000) {
+                    dbg.log.textContent = dbg.log.textContent.slice(0, 4000);
+                }
+            }
+        }
+
+        function fmtState(el, val) {
+            if (!el) return;
+            el.textContent = val;
+            el.className = 'value' +
+                (val === 'connected' || val === 'complete' ? ' ok' :
+                 val === 'failed' || val === 'closed' ? ' err' :
+                 val === 'checking' || val === 'connecting' ? ' warn' : '');
+        }
 
         // Extract cameraId from ?cameraId= query parameter.
         var cameraId = (function() {
@@ -108,6 +179,7 @@
 
         var ws = null;
         var assignedPeerId = null;
+        var statsTimer = null;
 
         function setPill(state) {
             pill.className = state;
@@ -119,6 +191,10 @@
             setPill('connecting');
             status.textContent = attempt > 0 ? 'Retrying (' + attempt + ')...' : 'Starting WebRTC...';
             assignedPeerId = null;
+            if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+            dbg.track.textContent = 'none';
+            dbg.bytes.textContent = '0';
+            dbg.pkts.textContent = '0';
 
             if (ws) {
                 try { ws.close(); } catch(_) {}
@@ -138,15 +214,18 @@
             pc.addTransceiver('video', { direction: 'recvonly' });
 
             pc.ontrack = function(evt) {
+                logDebug('ontrack: kind=' + evt.track.kind + ' id=' + evt.track.id + ' label=' + evt.track.label);
                 if (evt.track.kind === 'video') {
                     video.srcObject = evt.streams[0] || new MediaStream([evt.track]);
+                    dbg.track.textContent = evt.track.id;
                     setPill('connected');
-                    status.textContent = 'Connected';
+                    status.textContent = 'Connected — receiving video';
                 }
             };
 
             pc.onicecandidate = function(evt) {
                 if (!evt.candidate || !assignedPeerId || !ws) return;
+                logDebug('local ICE candidate: ' + evt.candidate.candidate.substring(0, 60) + '...');
                 ws.send(JSON.stringify({
                     type: 'ice',
                     peerId: assignedPeerId,
@@ -158,12 +237,15 @@
 
             pc.onconnectionstatechange = function() {
                 var s = pc.connectionState;
-                status.textContent = 'State: ' + s;
+                logDebug('pc.connectionState -> ' + s);
+                fmtState(dbg.pc, s);
                 if (s === 'connected') {
                     setPill('connected');
+                    status.textContent = 'Connected';
                 } else if (s === 'failed' || s === 'disconnected') {
                     setPill('failed');
                     pc.close();
+                    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     if (attempt < MAX_RETRIES) {
                         var delay = Math.pow(2, attempt) * 1000;
                         status.textContent = 'Reconnecting in ' + (delay/1000) + 's...';
@@ -174,6 +256,38 @@
                     }
                 }
             };
+
+            pc.oniceconnectionstatechange = function() {
+                var s = pc.iceConnectionState;
+                logDebug('pc.iceConnectionState -> ' + s);
+                fmtState(dbg.ice, s);
+            };
+
+            pc.onsignalingstatechange = function() {
+                logDebug('pc.signalingState -> ' + pc.signalingState);
+                fmtState(dbg.sig, pc.signalingState);
+            };
+
+            // Periodic stats polling
+            statsTimer = setInterval(function() {
+                if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
+                    return;
+                }
+                pc.getStats().then(function(report) {
+                    var bytes = 0, pkts = 0;
+                    report.forEach(function(r) {
+                        if (r.type === 'inbound-rtp' && r.kind === 'video') {
+                            bytes += (r.bytesReceived || 0);
+                            pkts  += (r.packetsReceived || 0);
+                        }
+                    });
+                    dbg.bytes.textContent = bytes;
+                    dbg.pkts.textContent = pkts;
+                    if (bytes === 0 && pc.connectionState === 'connected') {
+                        logDebug('STATS WARN: connected but 0 bytes received');
+                    }
+                });
+            }, 2000);
 
             // Open WebSocket to relay.
             var socketUrl = relayURL + '/?role=viewer&cameraId=' + encodeURIComponent(cameraId);
@@ -204,6 +318,7 @@
 
                 if (msg.type === 'answer' && msg.sdp) {
                     assignedPeerId = msg.peerId;
+                    logDebug('answer received from ' + msg.peerId + ', SDP len=' + msg.sdp.length);
                     pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
                         .then(function() {
                             status.textContent = 'Answer received; ICE connecting...';
@@ -212,6 +327,7 @@
                             console.error('setRemoteDescription error:', e);
                         });
                 } else if (msg.type === 'ice' && msg.candidate) {
+                    logDebug('remote ICE candidate: ' + msg.candidate.substring(0, 60) + '...');
                     pc.addIceCandidate(new RTCIceCandidate({
                         candidate: msg.candidate,
                         sdpMid: msg.sdpMid || '0',
@@ -225,6 +341,7 @@
                 status.textContent = 'Relay connection error';
                 setPill('failed');
                 pc.close();
+                if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                 if (attempt < MAX_RETRIES) {
                     var delay = Math.pow(2, attempt) * 1000;
                     status.textContent = 'Relay error. Retrying in ' + (delay/1000) + 's...';
@@ -239,6 +356,7 @@
                     setPill('failed');
                     status.textContent = 'Relay closed';
                     pc.close();
+                    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     if (attempt < MAX_RETRIES) {
                         var delay = Math.pow(2, attempt) * 1000;
                         status.textContent = 'Relay closed. Reconnecting in ' + (delay/1000) + 's...';
