@@ -398,20 +398,24 @@
             };
 
             ws.onclose = function(e) {
-                if (pc.connectionState !== 'connected') {
+                clearTimeout(watchdogTimer);
+                if (pc.connectionState === 'connected') {
+                    // WebSocket dropped while peer connection was up — close PC
+                    // so the camera cleans up immediately, then reconnect.
+                    logDebug('WebSocket closed while PC connected — closing PC and reconnecting');
+                    pc.close();
+                }
+                if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+                if (attempt < MAX_RETRIES) {
+                    var delay = Math.pow(2, attempt) * 1000;
+                    status.textContent = 'Relay closed. Reconnecting in ' + (delay/1000) + 's...';
+                    setPill('connecting');
+                    setTimeout(function() { connect(attempt + 1); }, delay);
+                } else {
                     setPill('failed');
                     status.textContent = 'Relay closed';
-                    clearTimeout(watchdogTimer);
-                    pc.close();
-                    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-                    if (attempt < MAX_RETRIES) {
-                        var delay = Math.pow(2, attempt) * 1000;
-                        status.textContent = 'Relay closed. Reconnecting in ' + (delay/1000) + 's...';
-                        setTimeout(function() { connect(attempt + 1); }, delay);
-                    } else {
-                        retryBtn.style.display = 'inline-block';
-                        autoDownloadLog('ws close after max retries');
-                    }
+                    retryBtn.style.display = 'inline-block';
+                    autoDownloadLog('ws close after max retries');
                 }
             };
         }
