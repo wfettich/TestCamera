@@ -43,7 +43,7 @@
         #state-pill.connecting { background: #664400; color: #ffaa44; }
         #state-pill.connected  { background: #004422; color: #44cc88; }
         #state-pill.failed     { background: #440022; color: #ff6688; }
-        #retry-btn {
+        #retry-btn, #download-log-btn {
             margin-top: 16px;
             padding: 8px 24px;
             border: none;
@@ -53,6 +53,11 @@
             font-size: 15px;
             cursor: pointer;
             display: none;
+        }
+        #download-log-btn {
+            background: #333;
+            color: #ccc;
+            margin-left: 8px;
         }
         #camera-id-error {
             margin-top: 32px;
@@ -101,6 +106,7 @@
         <span id="status">Starting WebRTC...</span>
     </div>
     <button id="retry-btn" onclick="connect(0)">Retry</button>
+    <button id="download-log-btn" onclick="downloadLog()">Download log</button>
     <div id="camera-id-error">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
 
     <div id="debug">
@@ -125,6 +131,7 @@
         const retryBtn = document.getElementById('retry-btn');
         const cameraIdErr = document.getElementById('camera-id-error');
         const MAX_RETRIES = 3;
+        var debugLogLines = [];
 
         const dbg = {
             pc:   document.getElementById('dbg-pc'),
@@ -140,12 +147,26 @@
             var t = new Date().toLocaleTimeString();
             var line = '[' + t + '] ' + msg;
             console.log(line);
+            debugLogLines.push(line);
             if (dbg.log) {
                 dbg.log.textContent = line + '\n' + dbg.log.textContent;
                 if (dbg.log.textContent.length > 4000) {
                     dbg.log.textContent = dbg.log.textContent.slice(0, 4000);
                 }
             }
+        }
+
+        function downloadLog() {
+            var text = debugLogLines.join('\n');
+            var blob = new Blob([text], { type: 'text/plain' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'viewer-debug-' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function fmtState(el, val) {
@@ -188,6 +209,7 @@
 
         function connect(attempt) {
             retryBtn.style.display = 'none';
+            document.getElementById('download-log-btn').style.display = 'inline-block';
             setPill('connecting');
             status.textContent = attempt > 0 ? 'Retrying (' + attempt + ')...' : 'Starting WebRTC...';
             assignedPeerId = null;
