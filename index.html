@@ -224,6 +224,7 @@
             status.textContent = attempt > 0 ? 'Retrying (' + attempt + ')...' : 'Starting WebRTC...';
             assignedPeerId = null;
             if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+            debugLogLines = [];
             dbg.track.textContent = 'none';
             dbg.bytes.textContent = '0';
             dbg.pkts.textContent = '0';
