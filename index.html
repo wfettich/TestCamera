@@ -136,7 +136,10 @@
         const retryBtn = document.getElementById('retry-btn');
         const cameraIdErr = document.getElementById('camera-id-error');
         const MAX_RETRIES = 3;
+        // Persistent across reconnects so we never lose the diagnostic history
+        // that led up to a failure. Cleared only by a fresh page load.
         var debugLogLines = [];
+        var pageLoadedAt = Date.now();
 
         const dbg = {
             pc:   document.getElementById('dbg-pc'),
@@ -148,21 +151,45 @@
             log:   document.getElementById('debug-log')
         };
 
-        function logDebug(msg) {
+        function fmtElapsed() {
+            var ms = Date.now() - pageLoadedAt;
+            var s = (ms / 1000).toFixed(2);
+            return '+' + s + 's';
+        }
+
+        function logDebug(msg, level) {
             var t = new Date().toLocaleTimeString();
-            var line = '[' + t + '] ' + msg;
-            console.log(line);
+            var prefix = level === 'err' ? 'ERR ' :
+                         level === 'warn' ? 'WARN ' :
+                         level === 'ok' ? 'OK  ' : '    ';
+            var line = '[' + t + ' ' + fmtElapsed() + '] ' + prefix + msg;
+            if (level === 'err')      console.error(line);
+            else if (level === 'warn') console.warn(line);
+            else                       console.log(line);
             debugLogLines.push(line);
             if (dbg.log) {
                 dbg.log.textContent = line + '\n' + dbg.log.textContent;
-                if (dbg.log.textContent.length > 4000) {
-                    dbg.log.textContent = dbg.log.textContent.slice(0, 4000);
+                if (dbg.log.textContent.length > 8000) {
+                    dbg.log.textContent = dbg.log.textContent.slice(0, 8000);
                 }
             }
         }
 
+        function logOk(msg)   { logDebug(msg, 'ok'); }
+        function logWarn(msg) { logDebug(msg, 'warn'); }
+        function logErr(msg)  { logDebug(msg, 'err'); }
+
         function downloadLog() {
-            var text = debugLogLines.join('\n');
+            var header = [
+                '=== TestCamera viewer debug log ===',
+                'Page loaded:  ' + new Date(pageLoadedAt).toISOString(),
+                'Downloaded:   ' + new Date().toISOString(),
+                'User agent:   ' + navigator.userAgent,
+                'URL:          ' + location.href,
+                'Lines:        ' + debugLogLines.length,
+                '==================================='
+            ].join('\n');
+            var text = header + '\n' + debugLogLines.join('\n');
             var blob = new Blob([text], { type: 'text/plain' });
             var url = URL.createObjectURL(blob);
             var a = document.createElement('a');
@@ -175,14 +202,23 @@
         }
 
         function autoDownloadLog(reason) {
-            logDebug('AUTO-DOWNLOAD triggered: ' + reason);
+            logErr('AUTO-DOWNLOAD triggered: ' + reason);
             setTimeout(downloadLog, 500);
         }
 
         window.onerror = function(msg, url, line, col, err) {
-            logDebug('JS ERROR: ' + msg + ' at ' + url + ':' + line);
+            logErr('JS ERROR: ' + msg + ' at ' + (url || '?') + ':' + (line || '?') +
+                   (err && err.stack ? ' stack=' + err.stack.split('\n').slice(0, 3).join(' | ') : ''));
             autoDownloadLog('uncaught JS error');
         };
+        window.addEventListener('unhandledrejection', function(e) {
+            logErr('UNHANDLED PROMISE REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+        });
+        window.addEventListener('online',  function() { logOk('network: online'); });
+        window.addEventListener('offline', function() { logWarn('network: offline'); });
+        document.addEventListener('visibilitychange', function() {
+            logDebug('visibility: ' + document.visibilityState);
+        });
 
         function fmtState(el, val) {
             if (!el) return;
@@ -223,44 +259,60 @@
         }
 
         function connect(attempt) {
+            var connectStartedAt = Date.now();
+            logDebug('--- connect(attempt=' + attempt + ') --- cameraId=' + cameraId + ' relay=' + relayURL);
             retryBtn.style.display = 'none';
             document.getElementById('download-log-btn').style.display = 'inline-block';
             setPill('connecting');
             status.textContent = attempt > 0 ? 'Retrying (' + attempt + ')...' : 'Starting WebRTC...';
             assignedPeerId = null;
-            if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-            debugLogLines = [];
+            if (statsTimer) {
+                logDebug('clearing previous statsTimer');
+                clearInterval(statsTimer);
+                statsTimer = null;
+            }
+            // Don't clear debugLogLines — preserve history across reconnects.
             dbg.track.textContent = 'none';
             dbg.bytes.textContent = '0';
             dbg.pkts.textContent = '0';
 
             if (ws) {
-                try { ws.close(); } catch(_) {}
+                logDebug('closing previous WebSocket (readyState=' + ws.readyState + ')');
+                try { ws.close(); } catch (e) { logErr('error closing previous ws: ' + e.message); }
                 ws = null;
             }
 
             // Watchdog: auto-download log if still not connected after 45s
             var watchdogTimer = setTimeout(function() {
                 if (pill.textContent !== 'connected') {
-                    logDebug('WATCHDOG: still not connected after 45s');
+                    logErr('WATCHDOG: still not connected after 45s (pill=' + pill.textContent + ', pc=' + pc.connectionState + ', ice=' + pc.iceConnectionState + ', sig=' + pc.signalingState + ')');
                     autoDownloadLog('connection timeout (45s)');
                 }
             }, 45000);
 
-            var pc = new RTCPeerConnection({
-                iceServers: [
-                    { urls: 'stun:stun.relay.metered.ca:80' },
-                    { urls: 'turn:global.relay.metered.ca:80', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                    { urls: 'turn:global.relay.metered.ca:443', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                ]
-            });
+            var iceServers = [
+                { urls: 'stun:stun.relay.metered.ca:80' },
+                { urls: 'turn:global.relay.metered.ca:80', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'turn:global.relay.metered.ca:443', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+            ];
+            logDebug('creating RTCPeerConnection with ' + iceServers.length + ' ICE servers');
+            var pc = new RTCPeerConnection({ iceServers: iceServers });
 
-            pc.addTransceiver('video', { direction: 'recvonly' });
+            try {
+                pc.addTransceiver('video', { direction: 'recvonly' });
+                logDebug('added recvonly video transceiver');
+            } catch (e) {
+                logErr('addTransceiver failed: ' + e.message);
+            }
 
             pc.ontrack = function(evt) {
-                logDebug('ontrack: kind=' + evt.track.kind + ' id=' + evt.track.id + ' label=' + evt.track.label);
+                logOk('ontrack: kind=' + evt.track.kind + ' id=' + evt.track.id +
+                      ' label=' + evt.track.label + ' streams=' + (evt.streams ? evt.streams.length : 0));
+                evt.track.onmute   = function() { logWarn('track muted: ' + evt.track.id); };
+                evt.track.onunmute = function() { logOk('track unmuted: ' + evt.track.id); };
+                evt.track.onended  = function() { logErr('track ended: ' + evt.track.id); };
                 if (evt.track.kind === 'video') {
                     video.srcObject = evt.streams[0] || new MediaStream([evt.track]);
                     dbg.track.textContent = evt.track.id;
@@ -270,15 +322,45 @@
             };
 
             pc.onicecandidate = function(evt) {
-                if (!evt.candidate || !assignedPeerId || !ws) return;
-                logDebug('local ICE candidate: ' + evt.candidate.candidate.substring(0, 60) + '...');
-                ws.send(JSON.stringify({
-                    type: 'ice',
-                    peerId: assignedPeerId,
-                    candidate: evt.candidate.candidate,
-                    sdpMid: evt.candidate.sdpMid,
-                    sdpMLineIndex: evt.candidate.sdpMLineIndex
-                }));
+                if (!evt.candidate) {
+                    logDebug('onicecandidate: end-of-candidates marker');
+                    return;
+                }
+                var c = evt.candidate.candidate || '';
+                var typeMatch = c.match(/typ (\S+)/);
+                var typ = typeMatch ? typeMatch[1] : '?';
+                if (!assignedPeerId) {
+                    logWarn('local ICE candidate generated before peerId assigned, dropping (typ=' + typ + ')');
+                    return;
+                }
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    logWarn('local ICE candidate generated but WS not open (readyState=' + (ws && ws.readyState) + '), dropping');
+                    return;
+                }
+                logDebug('local ICE candidate (typ=' + typ + '): ' + c.substring(0, 80) + '...');
+                try {
+                    ws.send(JSON.stringify({
+                        type: 'ice',
+                        peerId: assignedPeerId,
+                        candidate: evt.candidate.candidate,
+                        sdpMid: evt.candidate.sdpMid,
+                        sdpMLineIndex: evt.candidate.sdpMLineIndex
+                    }));
+                } catch (e) {
+                    logErr('failed to send local ICE: ' + e.message);
+                }
+            };
+
+            pc.onicecandidateerror = function(evt) {
+                // STUN/TURN responded with an error or timed out — common but useful signal.
+                logWarn('onicecandidateerror: url=' + (evt.url || '?') +
+                        ' code=' + evt.errorCode +
+                        ' text=' + (evt.errorText || '?') +
+                        ' addr=' + (evt.address || '?') + ':' + (evt.port || '?'));
+            };
+
+            pc.onicegatheringstatechange = function() {
+                logDebug('pc.iceGatheringState -> ' + pc.iceGatheringState);
             };
 
             // Transient `disconnected` is recoverable per WebRTC spec — only reconnect
@@ -287,44 +369,66 @@
             // because brief ICE pair stalls flap the state right after PC reaches
             // connected, tearing down the room every few seconds.
             var pcDisconnectTimer = null;
+            var pcDisconnectStartedAt = 0;
             var DISCONNECT_GRACE_MS = 10000;
+            var pcConnectedAt = 0;
             pc.onconnectionstatechange = function() {
                 var s = pc.connectionState;
-                logDebug('pc.connectionState -> ' + s);
                 fmtState(dbg.pc, s);
                 if (s === 'connected') {
+                    pcConnectedAt = Date.now();
+                    var dt = pcConnectedAt - connectStartedAt;
+                    logOk('pc.connectionState -> connected (took ' + dt + 'ms from connect start)');
                     clearTimeout(watchdogTimer);
-                    if (pcDisconnectTimer) { clearTimeout(pcDisconnectTimer); pcDisconnectTimer = null; }
+                    if (pcDisconnectTimer) {
+                        var recoveredIn = Date.now() - pcDisconnectStartedAt;
+                        logOk('pc recovered from disconnected after ' + recoveredIn + 'ms');
+                        clearTimeout(pcDisconnectTimer);
+                        pcDisconnectTimer = null;
+                    }
                     setPill('connected');
                     status.textContent = 'Connected';
                 } else if (s === 'disconnected') {
+                    var connectedFor = pcConnectedAt ? (Date.now() - pcConnectedAt) : -1;
+                    logWarn('pc.connectionState -> disconnected (was connected for ' + connectedFor + 'ms; entering ' +
+                            DISCONNECT_GRACE_MS + 'ms grace period)');
                     setPill('connecting');
                     status.textContent = 'Connection unstable — waiting for recovery...';
                     if (!pcDisconnectTimer) {
+                        pcDisconnectStartedAt = Date.now();
                         pcDisconnectTimer = setTimeout(function() {
                             pcDisconnectTimer = null;
                             if (pc.connectionState === 'disconnected') {
-                                logDebug('PC stayed disconnected for ' + DISCONNECT_GRACE_MS + 'ms — treating as failed');
+                                logErr('PC stayed disconnected for ' + DISCONNECT_GRACE_MS + 'ms — treating as failed');
                                 setPill('failed');
                                 pc.close();
                                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                                 scheduleReconnect('PC disconnected');
+                            } else {
+                                logDebug('grace timer fired but pc state is now ' + pc.connectionState + ' — no action');
                             }
                         }, DISCONNECT_GRACE_MS);
                     }
                 } else if (s === 'failed') {
+                    var failedAfter = pcConnectedAt ? (Date.now() - pcConnectedAt) : -1;
+                    logErr('pc.connectionState -> failed (was connected for ' + failedAfter + 'ms)');
                     clearTimeout(watchdogTimer);
                     if (pcDisconnectTimer) { clearTimeout(pcDisconnectTimer); pcDisconnectTimer = null; }
                     setPill('failed');
                     pc.close();
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     scheduleReconnect('PC failed');
+                } else {
+                    logDebug('pc.connectionState -> ' + s);
                 }
             };
 
             pc.oniceconnectionstatechange = function() {
                 var s = pc.iceConnectionState;
-                logDebug('pc.iceConnectionState -> ' + s);
+                if (s === 'connected' || s === 'completed') logOk('pc.iceConnectionState -> ' + s);
+                else if (s === 'failed' || s === 'closed') logErr('pc.iceConnectionState -> ' + s);
+                else if (s === 'disconnected') logWarn('pc.iceConnectionState -> ' + s);
+                else logDebug('pc.iceConnectionState -> ' + s);
                 fmtState(dbg.ice, s);
             };
 
@@ -333,45 +437,98 @@
                 fmtState(dbg.sig, pc.signalingState);
             };
 
-            // Periodic stats polling
+            // Periodic stats polling — also used to surface the selected ICE pair
+            // and dropped packets/keyframes once we're connected.
+            var lastBytes = 0, lastPkts = 0, lastStatsAt = 0, statsTickCount = 0;
             statsTimer = setInterval(function() {
                 if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
                     return;
                 }
                 pc.getStats().then(function(report) {
-                    var bytes = 0, pkts = 0;
+                    var bytes = 0, pkts = 0, lost = 0, frames = 0, keyframes = 0, jitter = -1, fir = 0, pli = 0, nack = 0;
+                    var selectedPair = null, localCand = null, remoteCand = null;
                     report.forEach(function(r) {
                         if (r.type === 'inbound-rtp' && r.kind === 'video') {
-                            bytes += (r.bytesReceived || 0);
-                            pkts  += (r.packetsReceived || 0);
+                            bytes      += (r.bytesReceived  || 0);
+                            pkts       += (r.packetsReceived || 0);
+                            lost       += (r.packetsLost    || 0);
+                            frames     += (r.framesReceived || 0);
+                            keyframes  += (r.keyFramesDecoded || 0);
+                            fir        += (r.firCount || 0);
+                            pli        += (r.pliCount || 0);
+                            nack       += (r.nackCount || 0);
+                            if (typeof r.jitter === 'number') jitter = r.jitter;
+                        }
+                        if ((r.type === 'candidate-pair' || r.type === 'transport') &&
+                            (r.selected || r.nominated || r.state === 'succeeded') && !selectedPair) {
+                            selectedPair = r;
                         }
                     });
+                    if (selectedPair && selectedPair.localCandidateId) {
+                        report.forEach(function(r) {
+                            if (r.id === selectedPair.localCandidateId)  localCand = r;
+                            if (r.id === selectedPair.remoteCandidateId) remoteCand = r;
+                        });
+                    }
                     dbg.bytes.textContent = bytes;
                     dbg.pkts.textContent = pkts;
-                    if (bytes === 0 && pc.connectionState === 'connected') {
-                        logDebug('STATS WARN: connected but 0 bytes received');
+                    statsTickCount++;
+                    var sinceLast = lastStatsAt ? (Date.now() - lastStatsAt) : 0;
+                    var bytesDelta = bytes - lastBytes;
+                    var pktsDelta  = pkts  - lastPkts;
+                    lastBytes = bytes; lastPkts = pkts; lastStatsAt = Date.now();
+                    // First, every 5th tick (10s), and any tick where flow stops while connected.
+                    var shouldLog = (statsTickCount === 1) || (statsTickCount % 5 === 0) ||
+                                    (bytesDelta === 0 && pc.connectionState === 'connected' && sinceLast > 0);
+                    if (shouldLog) {
+                        var pairStr = '';
+                        if (localCand && remoteCand) {
+                            pairStr = ' pair=' + (localCand.candidateType || '?') + '/' + (remoteCand.candidateType || '?') +
+                                      ' (' + (localCand.protocol || '?') + ')';
+                        }
+                        var line = 'stats #' + statsTickCount + ' Δ' + sinceLast + 'ms ' +
+                                   'bytes=' + bytes + '(+' + bytesDelta + ') ' +
+                                   'pkts=' + pkts + '(+' + pktsDelta + ') ' +
+                                   'lost=' + lost + ' frames=' + frames + ' kf=' + keyframes +
+                                   ' jitter=' + (jitter >= 0 ? jitter.toFixed(3) : '?') +
+                                   ' fir/pli/nack=' + fir + '/' + pli + '/' + nack + pairStr;
+                        if (bytesDelta === 0 && pc.connectionState === 'connected' && sinceLast > 0) {
+                            logWarn(line + ' [STALLED: 0 bytes since last sample]');
+                        } else {
+                            logDebug(line);
+                        }
                     }
-                });
+                }).catch(function(e) { logErr('getStats failed: ' + e.message); });
             }, 2000);
 
             // Open WebSocket to relay.
             var socketUrl = relayURL + '/?role=viewer&cameraId=' + encodeURIComponent(cameraId);
+            logDebug('opening WebSocket: ' + socketUrl);
+            var wsOpenedAt = 0;
             ws = new WebSocket(socketUrl);
 
             ws.onopen = function() {
+                wsOpenedAt = Date.now();
+                logOk('WebSocket open (took ' + (wsOpenedAt - connectStartedAt) + 'ms from connect start)');
                 status.textContent = 'WebSocket open; creating offer...';
+                var offerStartedAt = Date.now();
                 pc.createOffer()
-                    .then(function(offer) { return pc.setLocalDescription(offer); })
+                    .then(function(offer) {
+                        logDebug('offer created (took ' + (Date.now() - offerStartedAt) + 'ms), sdp.length=' + offer.sdp.length);
+                        return pc.setLocalDescription(offer);
+                    })
                     .then(function() {
+                        var peerId = 'viewer-' + Math.random().toString(36).slice(2, 10);
+                        logDebug('setLocalDescription done, sending offer with peerId=' + peerId);
                         ws.send(JSON.stringify({
                             type: 'offer',
-                            peerId: 'viewer-' + Math.random().toString(36).slice(2, 10),
+                            peerId: peerId,
                             sdp: pc.localDescription.sdp
                         }));
                         status.textContent = 'Offer sent; waiting for answer...';
                     })
                     .catch(function(e) {
-                        console.error('Offer error:', e);
+                        logErr('createOffer/setLocalDescription failed: ' + e.message);
                         setPill('failed');
                         status.textContent = 'Offer error: ' + e.message;
                     });
@@ -379,38 +536,57 @@
 
             ws.onmessage = function(evt) {
                 var msg;
-                try { msg = JSON.parse(evt.data); } catch(e) { return; }
+                try {
+                    msg = JSON.parse(evt.data);
+                } catch (e) {
+                    logErr('ws message: invalid JSON (' + e.message + '): ' + String(evt.data).slice(0, 200));
+                    return;
+                }
 
                 if (msg.type === 'answer' && msg.sdp) {
                     assignedPeerId = msg.peerId;
-                    logDebug('answer received from ' + msg.peerId + ', SDP len=' + msg.sdp.length);
+                    logOk('answer received from ' + msg.peerId + ', SDP len=' + msg.sdp.length);
                     pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
                         .then(function() {
+                            logOk('setRemoteDescription done — ICE will start');
                             status.textContent = 'Answer received; ICE connecting...';
                         })
                         .catch(function(e) {
-                            console.error('setRemoteDescription error:', e);
+                            logErr('setRemoteDescription failed: ' + e.message);
                         });
                 } else if (msg.type === 'ice' && msg.candidate) {
-                    logDebug('remote ICE candidate: ' + msg.candidate.substring(0, 60) + '...');
+                    var typeMatch = String(msg.candidate).match(/typ (\S+)/);
+                    var typ = typeMatch ? typeMatch[1] : '?';
+                    logDebug('remote ICE candidate (typ=' + typ + '): ' + String(msg.candidate).substring(0, 80) + '...');
                     pc.addIceCandidate(new RTCIceCandidate({
                         candidate: msg.candidate,
                         sdpMid: msg.sdpMid || '0',
                         sdpMLineIndex: msg.sdpMLineIndex || 0
-                    })).catch(function(e) { console.warn('addIceCandidate error:', e); });
+                    })).catch(function(e) { logWarn('addIceCandidate failed: ' + e.message); });
+                } else {
+                    logWarn('ws message: unknown type=' + msg.type + ' keys=' + Object.keys(msg).join(','));
                 }
             };
 
             var reconnectTimer = null;
 
             function scheduleReconnect(reason) {
-                if (reconnectTimer) return; // already scheduled
+                if (reconnectTimer) {
+                    logDebug('scheduleReconnect("' + reason + '") skipped — already scheduled');
+                    return;
+                }
                 if (attempt < MAX_RETRIES) {
                     var delay = Math.pow(2, attempt) * 1000;
+                    logWarn('scheduleReconnect: reason="' + reason + '" attempt=' + attempt +
+                            '/' + MAX_RETRIES + ' delay=' + delay + 'ms');
                     status.textContent = reason + '. Reconnecting in ' + (delay/1000) + 's...';
                     setPill('connecting');
-                    reconnectTimer = setTimeout(function() { connect(attempt + 1); }, delay);
+                    reconnectTimer = setTimeout(function() {
+                        logDebug('reconnect timer fired — calling connect(' + (attempt + 1) + ')');
+                        connect(attempt + 1);
+                    }, delay);
                 } else {
+                    logErr('scheduleReconnect: max retries (' + MAX_RETRIES + ') exhausted, reason="' + reason + '"');
                     setPill('failed');
                     status.textContent = 'Connection failed';
                     retryBtn.style.display = 'inline-block';
@@ -419,12 +595,26 @@
             }
 
             ws.onerror = function(e) {
-                console.error('WebSocket error:', e);
-                logDebug('WebSocket error');
+                logErr('WebSocket error event (readyState=' + (ws && ws.readyState) +
+                       ', pc=' + pc.connectionState + ', sig=' + pc.signalingState + ')');
+                // The error event itself carries no detail in browsers; the
+                // close event that follows has the actual code/reason.
             };
 
             ws.onclose = function(e) {
-                logDebug('WebSocket closed (code=' + (e && e.code) + ', clean=' + (e && e.wasClean) + ', pc=' + pc.connectionState + ')');
+                var openFor = wsOpenedAt ? (Date.now() - wsOpenedAt) : -1;
+                var fields = 'code=' + (e && e.code) +
+                             ' reason="' + ((e && e.reason) || '') + '"' +
+                             ' clean=' + (e && e.wasClean) +
+                             ' openFor=' + openFor + 'ms' +
+                             ' pc=' + pc.connectionState +
+                             ' ice=' + pc.iceConnectionState +
+                             ' sig=' + pc.signalingState;
+                if (pc.connectionState === 'connected') {
+                    logWarn('WebSocket closed but PC still connected — keeping PC alive (' + fields + ')');
+                } else {
+                    logErr('WebSocket closed before/without PC connect (' + fields + ')');
+                }
                 clearTimeout(watchdogTimer);
                 // If WebRTC media is up, the WS is no longer needed — keep the
                 // PeerConnection running and let pc.onconnectionstatechange drive
@@ -435,10 +625,14 @@
                     return;
                 }
                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-                scheduleReconnect('Relay closed');
+                scheduleReconnect('Relay closed (code=' + (e && e.code) + ')');
             };
         }
 
+        logDebug('Page loaded at ' + new Date(pageLoadedAt).toISOString() +
+                 ' — UA=' + navigator.userAgent.split(') ').slice(-1)[0]);
+        logDebug('online=' + navigator.onLine + ' visibility=' + document.visibilityState +
+                 ' cameraId=' + cameraId);
         connect(0);
     })();
     </script>
