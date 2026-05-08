@@ -382,43 +382,40 @@
                 }
             };
 
+            var reconnectTimer = null;
+
+            function scheduleReconnect(reason) {
+                if (reconnectTimer) return; // already scheduled
+                if (attempt < MAX_RETRIES) {
+                    var delay = Math.pow(2, attempt) * 1000;
+                    status.textContent = reason + '. Reconnecting in ' + (delay/1000) + 's...';
+                    setPill('connecting');
+                    reconnectTimer = setTimeout(function() { connect(attempt + 1); }, delay);
+                } else {
+                    setPill('failed');
+                    status.textContent = 'Connection failed';
+                    retryBtn.style.display = 'inline-block';
+                    autoDownloadLog(reason + ' after max retries');
+                }
+            }
+
             ws.onerror = function(e) {
                 console.error('WebSocket error:', e);
-                status.textContent = 'Relay connection error';
-                setPill('failed');
+                logDebug('WebSocket error');
                 clearTimeout(watchdogTimer);
                 pc.close();
                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-                if (attempt < MAX_RETRIES) {
-                    var delay = Math.pow(2, attempt) * 1000;
-                    status.textContent = 'Relay error. Retrying in ' + (delay/1000) + 's...';
-                    setTimeout(function() { connect(attempt + 1); }, delay);
-                } else {
-                    retryBtn.style.display = 'inline-block';
-                    autoDownloadLog('ws error after max retries');
-                }
+                scheduleReconnect('Relay error');
             };
 
             ws.onclose = function(e) {
                 clearTimeout(watchdogTimer);
                 if (pc.connectionState === 'connected') {
-                    // WebSocket dropped while peer connection was up — close PC
-                    // so the camera cleans up immediately, then reconnect.
                     logDebug('WebSocket closed while PC connected — closing PC and reconnecting');
                     pc.close();
                 }
                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-                if (attempt < MAX_RETRIES) {
-                    var delay = Math.pow(2, attempt) * 1000;
-                    status.textContent = 'Relay closed. Reconnecting in ' + (delay/1000) + 's...';
-                    setPill('connecting');
-                    setTimeout(function() { connect(attempt + 1); }, delay);
-                } else {
-                    setPill('failed');
-                    status.textContent = 'Relay closed';
-                    retryBtn.style.display = 'inline-block';
-                    autoDownloadLog('ws close after max retries');
-                }
+                scheduleReconnect('Relay closed');
             };
         }
 
