@@ -110,8 +110,8 @@
         <span id="state-pill" class="connecting">connecting</span>
         <span id="status">Starting WebRTC...</span>
     </div>
-    <button id="retry-btn" onclick="connect(0)">Retry</button>
-    <button id="download-log-btn" onclick="downloadLog()">Download log</button>
+    <button id="retry-btn">Retry</button>
+    <button id="download-log-btn">Download log</button>
     <div id="camera-id-error">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
 
     <div id="debug">
@@ -250,8 +250,15 @@
         })();
 
         var ws = null;
+        var pc = null;
         var assignedPeerId = null;
         var statsTimer = null;
+        // Monotonic counter incremented on every connect() call. Each connect()
+        // captures its own myEpoch and short-circuits any callbacks that fire
+        // after a newer connect has started — so old PC failure callbacks can
+        // no longer overwrite the new PC's healthy state, and stale ICE
+        // candidates from a closed PC are no longer forwarded.
+        var currentEpoch = 0;
 
         function setPill(state) {
             pill.className = state;
@@ -259,8 +266,10 @@
         }
 
         function connect(attempt) {
+            currentEpoch++;
+            var myEpoch = currentEpoch;
             var connectStartedAt = Date.now();
-            logDebug('--- connect(attempt=' + attempt + ') --- cameraId=' + cameraId + ' relay=' + relayURL);
+            logDebug('--- connect(attempt=' + attempt + ', epoch=' + myEpoch + ') --- cameraId=' + cameraId + ' relay=' + relayURL);
             retryBtn.style.display = 'none';
             document.getElementById('download-log-btn').style.display = 'inline-block';
             setPill('connecting');
@@ -282,6 +291,17 @@
                 ws = null;
             }
 
+            // Close the previous PC explicitly so its events stop firing and
+            // the browser stops trying to maintain the old connection.
+            if (pc) {
+                logDebug('closing previous PeerConnection (state=' + pc.connectionState + ')');
+                try { pc.close(); } catch (e) { logErr('error closing previous pc: ' + e.message); }
+                pc = null;
+            }
+            // Detach the video element so a stale "video frame still showing"
+            // doesn't outlive a failed connection.
+            try { video.srcObject = null; } catch (_) {}
+
             // Watchdog: auto-download log if still not connected after 45s
             var watchdogTimer = setTimeout(function() {
                 if (pill.textContent !== 'connected') {
@@ -298,7 +318,22 @@
                 { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
             ];
             logDebug('creating RTCPeerConnection with ' + iceServers.length + ' ICE servers');
-            var pc = new RTCPeerConnection({ iceServers: iceServers });
+            pc = new RTCPeerConnection({ iceServers: iceServers });
+            var thisPc = pc;
+            // Generate the peerId now so we can send local ICE candidates as
+            // soon as they're gathered, instead of waiting for the answer
+            // (which used to drop every early candidate).
+            var localPeerId = 'viewer-' + Math.random().toString(36).slice(2, 10);
+            logDebug('local peerId for this attempt: ' + localPeerId);
+
+            // Helper that bails out if a newer connect() has superseded this one.
+            function isStale(label) {
+                if (myEpoch !== currentEpoch) {
+                    logDebug('ignoring ' + label + ' from stale epoch ' + myEpoch + ' (current=' + currentEpoch + ')');
+                    return true;
+                }
+                return false;
+            }
 
             try {
                 pc.addTransceiver('video', { direction: 'recvonly' });
@@ -308,11 +343,20 @@
             }
 
             pc.ontrack = function(evt) {
+                if (isStale('ontrack')) return;
                 logOk('ontrack: kind=' + evt.track.kind + ' id=' + evt.track.id +
                       ' label=' + evt.track.label + ' streams=' + (evt.streams ? evt.streams.length : 0));
-                evt.track.onmute   = function() { logWarn('track muted: ' + evt.track.id); };
-                evt.track.onunmute = function() { logOk('track unmuted: ' + evt.track.id); };
-                evt.track.onended  = function() { logErr('track ended: ' + evt.track.id); };
+                evt.track.onmute   = function() {
+                    if (myEpoch !== currentEpoch) return;
+                    logWarn('track muted: ' + evt.track.id);
+                };
+                evt.track.onunmute = function() {
+                    if (myEpoch !== currentEpoch) return;
+                    logOk('track unmuted: ' + evt.track.id);
+                };
+                evt.track.onended  = function() {
+                    logErr('track ended: ' + evt.track.id + (myEpoch !== currentEpoch ? ' (stale epoch)' : ''));
+                };
                 if (evt.track.kind === 'video') {
                     video.srcObject = evt.streams[0] || new MediaStream([evt.track]);
                     dbg.track.textContent = evt.track.id;
@@ -322,6 +366,7 @@
             };
 
             pc.onicecandidate = function(evt) {
+                if (isStale('onicecandidate')) return;
                 if (!evt.candidate) {
                     logDebug('onicecandidate: end-of-candidates marker');
                     return;
@@ -329,19 +374,17 @@
                 var c = evt.candidate.candidate || '';
                 var typeMatch = c.match(/typ (\S+)/);
                 var typ = typeMatch ? typeMatch[1] : '?';
-                if (!assignedPeerId) {
-                    logWarn('local ICE candidate generated before peerId assigned, dropping (typ=' + typ + ')');
-                    return;
-                }
                 if (!ws || ws.readyState !== WebSocket.OPEN) {
-                    logWarn('local ICE candidate generated but WS not open (readyState=' + (ws && ws.readyState) + '), dropping');
+                    // Buffer candidates until the WS opens, then flush in onopen.
+                    logDebug('local ICE candidate (typ=' + typ + ') buffered until WS opens');
+                    pendingLocalCandidates.push(evt.candidate);
                     return;
                 }
                 logDebug('local ICE candidate (typ=' + typ + '): ' + c.substring(0, 80) + '...');
                 try {
                     ws.send(JSON.stringify({
                         type: 'ice',
-                        peerId: assignedPeerId,
+                        peerId: localPeerId,
                         candidate: evt.candidate.candidate,
                         sdpMid: evt.candidate.sdpMid,
                         sdpMLineIndex: evt.candidate.sdpMLineIndex
@@ -351,7 +394,10 @@
                 }
             };
 
+            var pendingLocalCandidates = [];
+
             pc.onicecandidateerror = function(evt) {
+                if (isStale('onicecandidateerror')) return;
                 // STUN/TURN responded with an error or timed out — common but useful signal.
                 logWarn('onicecandidateerror: url=' + (evt.url || '?') +
                         ' code=' + evt.errorCode +
@@ -360,7 +406,8 @@
             };
 
             pc.onicegatheringstatechange = function() {
-                logDebug('pc.iceGatheringState -> ' + pc.iceGatheringState);
+                if (isStale('iceGatheringState')) return;
+                logDebug('pc.iceGatheringState -> ' + thisPc.iceGatheringState);
             };
 
             // Transient `disconnected` is recoverable per WebRTC spec — only reconnect
@@ -373,7 +420,8 @@
             var DISCONNECT_GRACE_MS = 10000;
             var pcConnectedAt = 0;
             pc.onconnectionstatechange = function() {
-                var s = pc.connectionState;
+                if (isStale('connectionStateChange')) return;
+                var s = thisPc.connectionState;
                 fmtState(dbg.pc, s);
                 if (s === 'connected') {
                     pcConnectedAt = Date.now();
@@ -398,14 +446,15 @@
                         pcDisconnectStartedAt = Date.now();
                         pcDisconnectTimer = setTimeout(function() {
                             pcDisconnectTimer = null;
-                            if (pc.connectionState === 'disconnected') {
+                            if (myEpoch !== currentEpoch) return;
+                            if (thisPc.connectionState === 'disconnected') {
                                 logErr('PC stayed disconnected for ' + DISCONNECT_GRACE_MS + 'ms — treating as failed');
                                 setPill('failed');
-                                pc.close();
+                                try { thisPc.close(); } catch (_) {}
                                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                                 scheduleReconnect('PC disconnected');
                             } else {
-                                logDebug('grace timer fired but pc state is now ' + pc.connectionState + ' — no action');
+                                logDebug('grace timer fired but pc state is now ' + thisPc.connectionState + ' — no action');
                             }
                         }, DISCONNECT_GRACE_MS);
                     }
@@ -415,7 +464,7 @@
                     clearTimeout(watchdogTimer);
                     if (pcDisconnectTimer) { clearTimeout(pcDisconnectTimer); pcDisconnectTimer = null; }
                     setPill('failed');
-                    pc.close();
+                    try { thisPc.close(); } catch (_) {}
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     scheduleReconnect('PC failed');
                 } else {
@@ -424,7 +473,8 @@
             };
 
             pc.oniceconnectionstatechange = function() {
-                var s = pc.iceConnectionState;
+                if (isStale('iceConnectionState')) return;
+                var s = thisPc.iceConnectionState;
                 if (s === 'connected' || s === 'completed') logOk('pc.iceConnectionState -> ' + s);
                 else if (s === 'failed' || s === 'closed') logErr('pc.iceConnectionState -> ' + s);
                 else if (s === 'disconnected') logWarn('pc.iceConnectionState -> ' + s);
@@ -433,18 +483,23 @@
             };
 
             pc.onsignalingstatechange = function() {
-                logDebug('pc.signalingState -> ' + pc.signalingState);
-                fmtState(dbg.sig, pc.signalingState);
+                if (isStale('signalingState')) return;
+                logDebug('pc.signalingState -> ' + thisPc.signalingState);
+                fmtState(dbg.sig, thisPc.signalingState);
             };
 
             // Periodic stats polling — also used to surface the selected ICE pair
             // and dropped packets/keyframes once we're connected.
             var lastBytes = 0, lastPkts = 0, lastStatsAt = 0, statsTickCount = 0;
             statsTimer = setInterval(function() {
-                if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
+                if (myEpoch !== currentEpoch) {
+                    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     return;
                 }
-                pc.getStats().then(function(report) {
+                if (thisPc.connectionState !== 'connected' && thisPc.connectionState !== 'connecting') {
+                    return;
+                }
+                thisPc.getStats().then(function(report) {
                     var bytes = 0, pkts = 0, lost = 0, frames = 0, keyframes = 0, jitter = -1, fir = 0, pli = 0, nack = 0;
                     var selectedPair = null, localCand = null, remoteCand = null;
                     report.forEach(function(r) {
@@ -479,7 +534,7 @@
                     lastBytes = bytes; lastPkts = pkts; lastStatsAt = Date.now();
                     // First, every 5th tick (10s), and any tick where flow stops while connected.
                     var shouldLog = (statsTickCount === 1) || (statsTickCount % 5 === 0) ||
-                                    (bytesDelta === 0 && pc.connectionState === 'connected' && sinceLast > 0);
+                                    (bytesDelta === 0 && thisPc.connectionState === 'connected' && sinceLast > 0);
                     if (shouldLog) {
                         var pairStr = '';
                         if (localCand && remoteCand) {
@@ -492,7 +547,7 @@
                                    'lost=' + lost + ' frames=' + frames + ' kf=' + keyframes +
                                    ' jitter=' + (jitter >= 0 ? jitter.toFixed(3) : '?') +
                                    ' fir/pli/nack=' + fir + '/' + pli + '/' + nack + pairStr;
-                        if (bytesDelta === 0 && pc.connectionState === 'connected' && sinceLast > 0) {
+                        if (bytesDelta === 0 && thisPc.connectionState === 'connected' && sinceLast > 0) {
                             logWarn(line + ' [STALLED: 0 bytes since last sample]');
                         } else {
                             logDebug(line);
@@ -508,26 +563,47 @@
             ws = new WebSocket(socketUrl);
 
             ws.onopen = function() {
+                if (isStale('ws.onopen')) return;
                 wsOpenedAt = Date.now();
                 logOk('WebSocket open (took ' + (wsOpenedAt - connectStartedAt) + 'ms from connect start)');
                 status.textContent = 'WebSocket open; creating offer...';
                 var offerStartedAt = Date.now();
-                pc.createOffer()
+                thisPc.createOffer()
                     .then(function(offer) {
+                        if (myEpoch !== currentEpoch) throw new Error('stale epoch');
                         logDebug('offer created (took ' + (Date.now() - offerStartedAt) + 'ms), sdp.length=' + offer.sdp.length);
-                        return pc.setLocalDescription(offer);
+                        return thisPc.setLocalDescription(offer);
                     })
                     .then(function() {
-                        var peerId = 'viewer-' + Math.random().toString(36).slice(2, 10);
-                        logDebug('setLocalDescription done, sending offer with peerId=' + peerId);
+                        if (myEpoch !== currentEpoch) return;
+                        logDebug('setLocalDescription done, sending offer with peerId=' + localPeerId);
                         ws.send(JSON.stringify({
                             type: 'offer',
-                            peerId: peerId,
-                            sdp: pc.localDescription.sdp
+                            peerId: localPeerId,
+                            sdp: thisPc.localDescription.sdp
                         }));
                         status.textContent = 'Offer sent; waiting for answer...';
+                        // Flush any local ICE candidates that were gathered before the WS opened.
+                        if (pendingLocalCandidates.length > 0) {
+                            logDebug('flushing ' + pendingLocalCandidates.length + ' buffered local ICE candidate(s)');
+                            pendingLocalCandidates.forEach(function(cand) {
+                                try {
+                                    ws.send(JSON.stringify({
+                                        type: 'ice',
+                                        peerId: localPeerId,
+                                        candidate: cand.candidate,
+                                        sdpMid: cand.sdpMid,
+                                        sdpMLineIndex: cand.sdpMLineIndex
+                                    }));
+                                } catch (e) {
+                                    logErr('failed to flush buffered local ICE: ' + e.message);
+                                }
+                            });
+                            pendingLocalCandidates = [];
+                        }
                     })
                     .catch(function(e) {
+                        if (e && e.message === 'stale epoch') return;
                         logErr('createOffer/setLocalDescription failed: ' + e.message);
                         setPill('failed');
                         status.textContent = 'Offer error: ' + e.message;
@@ -535,6 +611,7 @@
             };
 
             ws.onmessage = function(evt) {
+                if (isStale('ws.onmessage')) return;
                 var msg;
                 try {
                     msg = JSON.parse(evt.data);
@@ -545,9 +622,13 @@
 
                 if (msg.type === 'answer' && msg.sdp) {
                     assignedPeerId = msg.peerId;
+                    if (msg.peerId !== localPeerId) {
+                        logWarn('answer peerId mismatch — local=' + localPeerId + ' answer=' + msg.peerId);
+                    }
                     logOk('answer received from ' + msg.peerId + ', SDP len=' + msg.sdp.length);
-                    pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
+                    thisPc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
                         .then(function() {
+                            if (myEpoch !== currentEpoch) return;
                             logOk('setRemoteDescription done — ICE will start');
                             status.textContent = 'Answer received; ICE connecting...';
                         })
@@ -595,22 +676,24 @@
             }
 
             ws.onerror = function(e) {
+                if (isStale('ws.onerror')) return;
                 logErr('WebSocket error event (readyState=' + (ws && ws.readyState) +
-                       ', pc=' + pc.connectionState + ', sig=' + pc.signalingState + ')');
+                       ', pc=' + thisPc.connectionState + ', sig=' + thisPc.signalingState + ')');
                 // The error event itself carries no detail in browsers; the
                 // close event that follows has the actual code/reason.
             };
 
             ws.onclose = function(e) {
+                if (isStale('ws.onclose')) return;
                 var openFor = wsOpenedAt ? (Date.now() - wsOpenedAt) : -1;
                 var fields = 'code=' + (e && e.code) +
                              ' reason="' + ((e && e.reason) || '') + '"' +
                              ' clean=' + (e && e.wasClean) +
                              ' openFor=' + openFor + 'ms' +
-                             ' pc=' + pc.connectionState +
-                             ' ice=' + pc.iceConnectionState +
-                             ' sig=' + pc.signalingState;
-                if (pc.connectionState === 'connected') {
+                             ' pc=' + thisPc.connectionState +
+                             ' ice=' + thisPc.iceConnectionState +
+                             ' sig=' + thisPc.signalingState;
+                if (thisPc.connectionState === 'connected') {
                     logWarn('WebSocket closed but PC still connected — keeping PC alive (' + fields + ')');
                 } else {
                     logErr('WebSocket closed before/without PC connect (' + fields + ')');
@@ -621,13 +704,20 @@
                 // any future reconnect. Tearing down on every WS close created a
                 // ~2-second reset loop because the camera periodically reconnects
                 // its own WS (which closes ours via the relay's room cleanup).
-                if (pc.connectionState === 'connected') {
+                if (thisPc.connectionState === 'connected') {
                     return;
                 }
                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                 scheduleReconnect('Relay closed (code=' + (e && e.code) + ')');
             };
         }
+
+        // Inline onclick="..." attributes can't see functions defined inside
+        // this IIFE (they're scoped to window). Wire the buttons via JS so
+        // the manual download / retry buttons actually work.
+        var downloadBtn = document.getElementById('download-log-btn');
+        if (downloadBtn) downloadBtn.onclick = downloadLog;
+        if (retryBtn) retryBtn.onclick = function() { connect(0); };
 
         logDebug('Page loaded at ' + new Date(pageLoadedAt).toISOString() +
                  ' — UA=' + navigator.userAgent.split(') ').slice(-1)[0]);
