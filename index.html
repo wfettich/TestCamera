@@ -281,28 +281,44 @@
                 }));
             };
 
+            // Transient `disconnected` is recoverable per WebRTC spec — only reconnect
+            // on `failed`, or after `disconnected` has persisted long enough to be
+            // considered terminal. Reconnecting on `disconnected` causes a tight loop
+            // because brief ICE pair stalls flap the state right after PC reaches
+            // connected, tearing down the room every few seconds.
+            var pcDisconnectTimer = null;
+            var DISCONNECT_GRACE_MS = 10000;
             pc.onconnectionstatechange = function() {
                 var s = pc.connectionState;
                 logDebug('pc.connectionState -> ' + s);
                 fmtState(dbg.pc, s);
                 if (s === 'connected') {
                     clearTimeout(watchdogTimer);
+                    if (pcDisconnectTimer) { clearTimeout(pcDisconnectTimer); pcDisconnectTimer = null; }
                     setPill('connected');
                     status.textContent = 'Connected';
-                } else if (s === 'failed' || s === 'disconnected') {
+                } else if (s === 'disconnected') {
+                    setPill('connecting');
+                    status.textContent = 'Connection unstable — waiting for recovery...';
+                    if (!pcDisconnectTimer) {
+                        pcDisconnectTimer = setTimeout(function() {
+                            pcDisconnectTimer = null;
+                            if (pc.connectionState === 'disconnected') {
+                                logDebug('PC stayed disconnected for ' + DISCONNECT_GRACE_MS + 'ms — treating as failed');
+                                setPill('failed');
+                                pc.close();
+                                if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+                                scheduleReconnect('PC disconnected');
+                            }
+                        }, DISCONNECT_GRACE_MS);
+                    }
+                } else if (s === 'failed') {
                     clearTimeout(watchdogTimer);
+                    if (pcDisconnectTimer) { clearTimeout(pcDisconnectTimer); pcDisconnectTimer = null; }
                     setPill('failed');
                     pc.close();
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-                    if (attempt < MAX_RETRIES) {
-                        var delay = Math.pow(2, attempt) * 1000;
-                        status.textContent = 'Reconnecting in ' + (delay/1000) + 's...';
-                        setTimeout(function() { connect(attempt + 1); }, delay);
-                    } else {
-                        status.textContent = 'Connection failed after ' + MAX_RETRIES + ' attempts.';
-                        retryBtn.style.display = 'inline-block';
-                        autoDownloadLog('pc state ' + s + ' after max retries');
-                    }
+                    scheduleReconnect('PC failed');
                 }
             };
 
@@ -405,17 +421,18 @@
             ws.onerror = function(e) {
                 console.error('WebSocket error:', e);
                 logDebug('WebSocket error');
-                clearTimeout(watchdogTimer);
-                pc.close();
-                if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-                scheduleReconnect('Relay error');
             };
 
             ws.onclose = function(e) {
+                logDebug('WebSocket closed (code=' + (e && e.code) + ', clean=' + (e && e.wasClean) + ', pc=' + pc.connectionState + ')');
                 clearTimeout(watchdogTimer);
+                // If WebRTC media is up, the WS is no longer needed — keep the
+                // PeerConnection running and let pc.onconnectionstatechange drive
+                // any future reconnect. Tearing down on every WS close created a
+                // ~2-second reset loop because the camera periodically reconnects
+                // its own WS (which closes ours via the relay's room cleanup).
                 if (pc.connectionState === 'connected') {
-                    logDebug('WebSocket closed while PC connected — closing PC and reconnecting');
-                    pc.close();
+                    return;
                 }
                 if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                 scheduleReconnect('Relay closed');
