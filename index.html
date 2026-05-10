@@ -166,8 +166,8 @@
 <body>
     <h1>Camera Stream</h1>
     <div class="tab-bar">
-        <div class="tab active" id="tab-live" onclick="switchTab('live')">Live</div>
-        <div class="tab" id="tab-archive" onclick="switchTab('archive')">Archive</div>
+        <div class="tab active" id="tab-live">Live</div>
+        <div class="tab" id="tab-archive">Archive</div>
     </div>
     <div id="video-container">
         <video id="video" autoplay muted playsinline></video>
@@ -678,7 +678,8 @@
 
             pc.onsignalingstatechange = function() {
                 if (isStale('signalingState')) return;
-                logDebug('pc.signalingState -> ' + thisPc.signalingState);
+                var s = thisPc.signalingState;
+                logDebug('pc.signalingState -> ' + s);
                 fmtState(dbg.sig, s);
             };
 
@@ -912,6 +913,8 @@
         var downloadBtn = document.getElementById('download-log-btn');
         if (downloadBtn) downloadBtn.onclick = downloadLog;
         if (retryBtn) retryBtn.onclick = function() { connect(0); };
+        if (tabLive)    tabLive.onclick    = function() { switchTab('live'); };
+        if (tabArchive) tabArchive.onclick = function() { switchTab('archive'); };
 
         logDebug('Page loaded at ' + new Date(pageLoadedAt).toISOString() +
                  ' — UA=' + navigator.userAgent.split(') ').slice(-1)[0]);
