@@ -20,6 +20,25 @@
             min-height: 100vh;
         }
         h1 { margin-bottom: 20px; font-weight: 300; }
+        .tab-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .tab {
+            padding: 6px 18px;
+            border-radius: 20px;
+            border: 1px solid #444;
+            background: #2a2a2a;
+            color: #aaa;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .tab.active {
+            background: #0a84ff;
+            color: #fff;
+            border-color: #0a84ff;
+        }
         #video-container {
             width: 90vw;
             max-width: 1280px;
@@ -73,6 +92,49 @@
             font-size: 15px;
             display: none;
         }
+        #archive-container {
+            width: 90vw;
+            max-width: 1280px;
+            max-height: 70vh;
+            background: #111;
+            border-radius: 8px;
+            overflow-y: auto;
+            display: none;
+            padding: 16px;
+        }
+        #archive-usage {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .day-section {
+            margin-bottom: 12px;
+        }
+        .day-header {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 6px;
+            color: #ddd;
+        }
+        .segment-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border-radius: 6px;
+            margin-bottom: 6px;
+            cursor: pointer;
+        }
+        .segment-row:hover { background: #2a2a2a; }
+        .segment-info { font-size: 13px; color: #bbb; }
+        .segment-play { font-size: 12px; color: #0a84ff; }
+        #archive-relay-msg {
+            color: #888;
+            padding: 20px;
+            text-align: center;
+            font-size: 14px;
+        }
         #debug {
             margin-top: 16px;
             width: 90vw;
@@ -103,8 +165,20 @@
 </head>
 <body>
     <h1>Camera Stream</h1>
+    <div class="tab-bar">
+        <div class="tab active" id="tab-live" onclick="switchTab('live')">Live</div>
+        <div class="tab" id="tab-archive" onclick="switchTab('archive')">Archive</div>
+    </div>
     <div id="video-container">
         <video id="video" autoplay muted playsinline></video>
+    </div>
+    <div id="archive-container">
+        <div id="archive-usage">Loading archive...</div>
+        <div id="archive-list"></div>
+        <div id="archive-relay-msg" style="display:none;">
+            Archive viewing requires Direct signaling mode.<br>
+            Switch in the camera app's Settings.
+        </div>
     </div>
     <div id="status-bar">
         <span id="state-pill" class="connecting">connecting</span>
@@ -135,11 +209,36 @@
         const pill    = document.getElementById('state-pill');
         const retryBtn = document.getElementById('retry-btn');
         const cameraIdErr = document.getElementById('camera-id-error');
+        const archiveContainer = document.getElementById('archive-container');
+        const archiveList = document.getElementById('archive-list');
+        const archiveUsage = document.getElementById('archive-usage');
+        const archiveRelayMsg = document.getElementById('archive-relay-msg');
+        const tabLive = document.getElementById('tab-live');
+        const tabArchive = document.getElementById('tab-archive');
         const MAX_RETRIES = 3;
+        var liveSrcObject = null;
         // Persistent across reconnects so we never lose the diagnostic history
         // that led up to a failure. Cleared only by a fresh page load.
         var debugLogLines = [];
         var pageLoadedAt = Date.now();
+
+        // Detect mode: relay if ?relay= param is present or hostname is not a local IP.
+        var isRelayMode = (function() {
+            var params = new URLSearchParams(location.search);
+            if (params.get('relay')) return true;
+            var host = location.hostname;
+            if (host === 'localhost' || host === '127.0.0.1') return false;
+            if (/^192\.168\./.test(host)) return false;
+            if (/^10\./.test(host)) return false;
+            if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
+            return true;
+        })();
+
+        // In direct mode, the access token is passed via ?t= for archive access.
+        var accessToken = (function() {
+            var params = new URLSearchParams(location.search);
+            return params.get('t') || '';
+        })();
 
         const dbg = {
             pc:   document.getElementById('dbg-pc'),
@@ -265,6 +364,100 @@
             pill.textContent = state;
         }
 
+        function tokenQuery() {
+            return '?t=' + encodeURIComponent(accessToken);
+        }
+
+        function switchTab(tab) {
+            console.info('Switching to tab:', tab);
+            if (tab === 'live') {
+                tabLive.classList.add('active');
+                tabArchive.classList.remove('active');
+                document.getElementById('video-container').style.display = 'block';
+                archiveContainer.style.display = 'none';
+                document.getElementById('status-bar').style.display = 'flex';
+                if (liveSrcObject && !video.srcObject) {
+                    video.srcObject = liveSrcObject;
+                    video.play().catch(function(){});
+                }
+            } else {
+                tabLive.classList.remove('active');
+                tabArchive.classList.add('active');
+                document.getElementById('video-container').style.display = 'none';
+                archiveContainer.style.display = 'block';
+                document.getElementById('status-bar').style.display = 'none';
+                if (isRelayMode) {
+                    archiveList.innerHTML = '';
+                    archiveUsage.textContent = '';
+                    archiveRelayMsg.style.display = 'block';
+                } else {
+                    archiveRelayMsg.style.display = 'none';
+                    fetchArchiveIndex();
+                }
+            }
+        }
+
+        function fetchArchiveIndex() {
+            console.info('Fetching archive index...');
+            archiveUsage.textContent = 'Loading archive...';
+            fetch('/archive/index.json' + tokenQuery())
+                .then(function(r) {
+                    if (r.status === 401) { throw new Error('unauthorized'); }
+                    if (r.status === 404) { throw new Error('archive not available'); }
+                    return r.json();
+                })
+                .then(function(data) {
+                    console.info('Archive index loaded:', data.days.length, 'days');
+                    renderArchive(data);
+                })
+                .catch(function(e) {
+                    console.warn('Failed to load archive index:', e);
+                    archiveUsage.textContent = 'Archive unavailable.';
+                    archiveList.innerHTML = '';
+                });
+        }
+
+        function renderArchive(data) {
+            var usedGB = (data.usedBytes / 1e9).toFixed(2);
+            var maxGB = (data.maxBytes / 1e9).toFixed(2);
+            archiveUsage.textContent = 'Using ' + usedGB + ' / ' + maxGB + ' GB';
+
+            if (!data.days || data.days.length === 0) {
+                archiveList.innerHTML = '<div style="color:#888;padding:20px;text-align:center;">No recordings yet.</div>';
+                return;
+            }
+
+            var html = '';
+            data.days.forEach(function(day) {
+                html += '<div class="day-section"><div class="day-header">' + escapeHtml(day.date) + '</div>';
+                day.segments.forEach(function(seg) {
+                    var sizeMB = (seg.bytes / 1e6).toFixed(1);
+                    html += '<div class="segment-row" onclick="playSegment(\'' + seg.path + '\')">' +
+                        '<span class="segment-info">' + escapeHtml(seg.start) + ' &middot; ' + sizeMB + ' MB</span>' +
+                        '<span class="segment-play">Play</span></div>';
+                });
+                html += '</div>';
+            });
+            archiveList.innerHTML = html;
+        }
+
+        window.playSegment = function(path) {
+            console.info('Playing archive segment:', path);
+            if (video.srcObject) {
+                liveSrcObject = video.srcObject;
+                video.srcObject = null;
+            }
+            video.src = path + tokenQuery();
+            video.play().catch(function(e) { console.error('Playback error:', e); });
+            switchTab('live');
+        };
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         function connect(attempt) {
             currentEpoch++;
             var myEpoch = currentEpoch;
@@ -359,6 +552,7 @@
                 };
                 if (evt.track.kind === 'video') {
                     video.srcObject = evt.streams[0] || new MediaStream([evt.track]);
+                    liveSrcObject = video.srcObject;
                     dbg.track.textContent = evt.track.id;
                     setPill('connected');
                     status.textContent = 'Connected — receiving video';
@@ -485,7 +679,7 @@
             pc.onsignalingstatechange = function() {
                 if (isStale('signalingState')) return;
                 logDebug('pc.signalingState -> ' + thisPc.signalingState);
-                fmtState(dbg.sig, thisPc.signalingState);
+                fmtState(dbg.sig, s);
             };
 
             // Periodic stats polling — also used to surface the selected ICE pair
@@ -722,7 +916,7 @@
         logDebug('Page loaded at ' + new Date(pageLoadedAt).toISOString() +
                  ' — UA=' + navigator.userAgent.split(') ').slice(-1)[0]);
         logDebug('online=' + navigator.onLine + ' visibility=' + document.visibilityState +
-                 ' cameraId=' + cameraId);
+                 ' cameraId=' + cameraId + ' relayMode=' + isRelayMode);
         connect(0);
     })();
     </script>
