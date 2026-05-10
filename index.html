@@ -369,14 +369,22 @@
         }
 
         function switchTab(tab) {
-            console.info('Switching to tab:', tab);
+            logDebug('switchTab -> ' + tab);
             if (tab === 'live') {
                 tabLive.classList.add('active');
                 tabArchive.classList.remove('active');
                 document.getElementById('video-container').style.display = 'block';
                 archiveContainer.style.display = 'none';
                 document.getElementById('status-bar').style.display = 'flex';
-                if (liveSrcObject && !video.srcObject) {
+                // Tear down any archive playback before restoring live.
+                if (video.src) {
+                    try { video.pause(); } catch (_) {}
+                    video.removeAttribute('src');
+                    video.load();
+                }
+                video.controls = false;
+                video.muted = true;
+                if (liveSrcObject) {
                     video.srcObject = liveSrcObject;
                     video.play().catch(function(){});
                 }
@@ -442,14 +450,21 @@
         }
 
         window.playSegment = function(path) {
-            console.info('Playing archive segment:', path);
+            logOk('playSegment: ' + path);
             if (video.srcObject) {
                 liveSrcObject = video.srcObject;
                 video.srcObject = null;
             }
             video.src = path + tokenQuery();
-            video.play().catch(function(e) { console.error('Playback error:', e); });
-            switchTab('live');
+            video.controls = true;
+            video.muted = false;
+            video.play().catch(function(e) { logErr('Playback error: ' + e.message); });
+            // Show the video element WITHOUT going through switchTab('live'),
+            // because switchTab would re-attach liveSrcObject and clobber the
+            // mp4 we just set. Keep the Archive tab visually active.
+            document.getElementById('video-container').style.display = 'block';
+            archiveContainer.style.display = 'none';
+            document.getElementById('status-bar').style.display = 'none';
         };
 
         function escapeHtml(text) {
