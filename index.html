@@ -376,6 +376,9 @@
                 document.getElementById('video-container').style.display = 'block';
                 archiveContainer.style.display = 'none';
                 document.getElementById('status-bar').style.display = 'flex';
+                // Reset to the live track's 16:9 frame in case archive
+                // playback reshaped the container to a portrait aspect.
+                document.getElementById('video-container').style.aspectRatio = '16 / 9';
                 // Tear down any archive playback before restoring live.
                 if (video.src) {
                     try { video.pause(); } catch (_) {}
@@ -462,9 +465,21 @@
             // Show the video element WITHOUT going through switchTab('live'),
             // because switchTab would re-attach liveSrcObject and clobber the
             // mp4 we just set. Keep the Archive tab visually active.
-            document.getElementById('video-container').style.display = 'block';
+            var container = document.getElementById('video-container');
+            container.style.display = 'block';
             archiveContainer.style.display = 'none';
             document.getElementById('status-bar').style.display = 'none';
+            // Reshape the container to match the MP4's rotation-corrected
+            // intrinsic dimensions so a portrait recording isn't pillarboxed
+            // inside the live track's default 16:9 frame.
+            var onMeta = function() {
+                if (video.videoWidth && video.videoHeight) {
+                    container.style.aspectRatio = video.videoWidth + ' / ' + video.videoHeight;
+                    logDebug('archive video ' + video.videoWidth + 'x' + video.videoHeight + ' -> container aspect ' + (video.videoWidth/video.videoHeight).toFixed(2));
+                }
+                video.removeEventListener('loadedmetadata', onMeta);
+            };
+            video.addEventListener('loadedmetadata', onMeta);
         };
 
         function escapeHtml(text) {
