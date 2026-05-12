@@ -376,9 +376,15 @@
                 document.getElementById('video-container').style.display = 'block';
                 archiveContainer.style.display = 'none';
                 document.getElementById('status-bar').style.display = 'flex';
-                // Reset to the live track's 16:9 frame in case archive
-                // playback reshaped the container to a portrait aspect.
+                // Reset all styles archive playback may have applied.
                 document.getElementById('video-container').style.aspectRatio = '16 / 9';
+                video.style.position = '';
+                video.style.top = '';
+                video.style.left = '';
+                video.style.width = '';
+                video.style.height = '';
+                video.style.transform = '';
+                video.style.transformOrigin = '';
                 // Tear down any archive playback before restoring live.
                 if (video.src) {
                     try { video.pause(); } catch (_) {}
@@ -443,7 +449,8 @@
                 html += '<div class="day-section"><div class="day-header">' + escapeHtml(day.date) + '</div>';
                 day.segments.forEach(function(seg) {
                     var sizeMB = (seg.bytes / 1e6).toFixed(1);
-                    html += '<div class="segment-row" onclick="playSegment(\'' + seg.path + '\')">' +
+                    var rot = (seg.rotation == null) ? 0 : (seg.rotation | 0);
+                    html += '<div class="segment-row" onclick="playSegment(\'' + seg.path + '\', ' + rot + ')">' +
                         '<span class="segment-info">' + escapeHtml(seg.start) + ' &middot; ' + sizeMB + ' MB</span>' +
                         '<span class="segment-play">Play</span></div>';
                 });
@@ -452,32 +459,61 @@
             archiveList.innerHTML = html;
         }
 
-        window.playSegment = function(path) {
-            logOk('playSegment: ' + path);
+        window.playSegment = function(path, rotation) {
+            rotation = rotation || 0;
+            logOk('playSegment: ' + path + ' rotation=' + rotation);
             if (video.srcObject) {
                 liveSrcObject = video.srcObject;
                 video.srcObject = null;
             }
+            // Reset any styles left over from a prior archive playback.
+            video.style.position = '';
+            video.style.top = '';
+            video.style.left = '';
+            video.style.width = '';
+            video.style.height = '';
+            video.style.transform = '';
+            video.style.transformOrigin = '';
             video.src = path + tokenQuery();
             video.controls = true;
             video.muted = false;
             video.play().catch(function(e) { logErr('Playback error: ' + e.message); });
-            // Show the video element WITHOUT going through switchTab('live'),
-            // because switchTab would re-attach liveSrcObject and clobber the
-            // mp4 we just set. Keep the Archive tab visually active.
             var container = document.getElementById('video-container');
             container.style.display = 'block';
+            container.style.position = 'relative';
             archiveContainer.style.display = 'none';
             document.getElementById('status-bar').style.display = 'none';
-            // Reshape the container to match the MP4's rotation-corrected
-            // intrinsic dimensions so a portrait recording isn't pillarboxed
-            // inside the live track's default 16:9 frame.
+            // Use the server-provided rotation hint (parsed from the MP4 tkhd
+            // matrix). Browsers disagree on whether videoWidth/videoHeight
+            // reflect post-rotation dimensions, so we never trust them here.
+            if (rotation === 90 || rotation === 270) {
+                container.style.aspectRatio = '9 / 16';
+            } else {
+                container.style.aspectRatio = '16 / 9';
+            }
+            // Detect whether the browser auto-rotated; if not, apply CSS.
             var onMeta = function() {
-                if (video.videoWidth && video.videoHeight) {
-                    container.style.aspectRatio = video.videoWidth + ' / ' + video.videoHeight;
-                    logDebug('archive video ' + video.videoWidth + 'x' + video.videoHeight + ' -> container aspect ' + (video.videoWidth/video.videoHeight).toFixed(2));
-                }
                 video.removeEventListener('loadedmetadata', onMeta);
+                if (rotation === 0) return;
+                var browserRotated = (rotation === 90 || rotation === 270) &&
+                    video.videoHeight > video.videoWidth;
+                if (browserRotated) {
+                    logDebug('archive: browser handled rotation (' + video.videoWidth + 'x' + video.videoHeight + ')');
+                    return;
+                }
+                var apply = function() {
+                    var rect = container.getBoundingClientRect();
+                    video.style.position = 'absolute';
+                    video.style.top = '50%';
+                    video.style.left = '50%';
+                    video.style.width = rect.height + 'px';
+                    video.style.height = rect.width + 'px';
+                    video.style.transformOrigin = 'center';
+                    video.style.transform = 'translate(-50%, -50%) rotate(' + rotation + 'deg)';
+                };
+                apply();
+                requestAnimationFrame(apply);
+                logDebug('archive: applied manual ' + rotation + '° CSS rotation (' + video.videoWidth + 'x' + video.videoHeight + ')');
             };
             video.addEventListener('loadedmetadata', onMeta);
         };
