@@ -492,9 +492,13 @@
                 container.style.aspectRatio = '16 / 9';
             }
             // Detect whether the browser auto-rotated; if not, apply CSS.
+            // For 180 there is no dimension-flip test (landscape stays
+            // landscape under 180°), so we always trust the browser — modern
+            // browsers honour the tkhd matrix for 180, and applying a manual
+            // CSS rotate(180) on top doubles up and plays upside-down.
             var onMeta = function() {
                 video.removeEventListener('loadedmetadata', onMeta);
-                if (rotation === 0) return;
+                if (rotation === 0 || rotation === 180) return;
                 var browserRotated = (rotation === 90 || rotation === 270) &&
                     video.videoHeight > video.videoWidth;
                 if (browserRotated) {
