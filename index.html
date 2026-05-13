@@ -365,7 +365,7 @@
                     return;
                 }
                 // Otherwise queue. This covers two pre-ready states:
-                //   (a) archiveDC === null — pc.ondatachannel hasn't fired yet
+                //   (a) archiveDC === null — DC not yet open
                 //       (still in the offer/answer round-trip).
                 //   (b) archiveDC exists but readyState !== 'open' — connecting.
                 // In both cases the queue is flushed by _processQueuedRequests
@@ -406,7 +406,7 @@
             get isRelayMode() { return _isRelayMode; },
             fetchJson: fetchJson,
             fetchSegment: fetchSegment,
-            // Called from connect() when pc.ondatachannel fires with label "archive".
+            // Called from connect() after pc.createDataChannel('archive') to wire up handlers.
             setDC: _setupArchiveChannel
         };
     })();
@@ -623,33 +623,6 @@
                 .then(function(data) {
                     logOk('Archive index loaded: ' + (data.days ? data.days.length : 0) + ' days');
                     renderArchive(data);
-                    // Prefetch the most-recent segment (last segment of the last day —
-                    // segments are sorted oldest-first by filename). Only in relay mode,
-                    // and only if we don't already have a prefetch in flight.
-                    if (isRelayMode && _prefetchedSegment === null &&
-                            data.days && data.days.length > 0) {
-                        var lastDay = data.days[data.days.length - 1];
-                        var lastSeg = lastDay && lastDay.segments &&
-                                      lastDay.segments[lastDay.segments.length - 1];
-                        if (lastSeg && lastSeg.path) {
-                            var prefetchPath = lastSeg.path;
-                            logDebug('prefetching most-recent segment: ' + prefetchPath);
-                            ArchiveTransport.fetchSegment(prefetchPath).then(function(blob) {
-                                // Only store if the slot is still empty (user hasn't
-                                // clicked anything yet) and path hasn't been superseded.
-                                if (_prefetchedSegment === null) {
-                                    _prefetchedSegment = {
-                                        path: prefetchPath,
-                                        blob: blob,
-                                        url: URL.createObjectURL(blob)
-                                    };
-                                    logOk('prefetch complete for ' + prefetchPath);
-                                }
-                            }).catch(function(e) {
-                                logDebug('prefetch failed (non-fatal): ' + e.message);
-                            });
-                        }
-                    }
                 })
                 .catch(function(e) {
                     logWarn('Failed to load archive index: ' + e.message);
@@ -684,72 +657,10 @@
         }
 
         var _prevSegmentBlobURL = null;
-        // Prefetched segment: { path, blob, url } or null.
-        var _prefetchedSegment = null;
 
         window.playSegment = function(path, rotation) {
             rotation = rotation || 0;
             logOk('playSegment: ' + path + ' rotation=' + rotation + ' relayMode=' + isRelayMode);
-
-            // Relay mode: check whether we have a prefetched blob for this segment.
-            if (isRelayMode && _prefetchedSegment) {
-                if (_prefetchedSegment.path === path) {
-                    logOk('playSegment: using prefetched blob for ' + path);
-                    if (_prevSegmentBlobURL) URL.revokeObjectURL(_prevSegmentBlobURL);
-                    _prevSegmentBlobURL = _prefetchedSegment.url;
-                    _prefetchedSegment = null;
-                    // Fall through to the rest of the function to set up the video
-                    // element and rotation — but skip the fetch block.
-                    // We signal this via a local variable.
-                    var _usePrefetched = _prevSegmentBlobURL;
-                    if (video.srcObject) { liveSrcObject = video.srcObject; video.srcObject = null; }
-                    video.style.position = '';
-                    video.style.top = '';
-                    video.style.left = '';
-                    video.style.width = '';
-                    video.style.height = '';
-                    video.style.transform = '';
-                    video.style.transformOrigin = '';
-                    var container = document.getElementById('video-container');
-                    container.style.display = 'block';
-                    container.style.position = 'relative';
-                    archiveContainer.style.display = 'none';
-                    document.getElementById('status-bar').style.display = 'none';
-                    document.getElementById('download-progress').style.display = 'none';
-                    (function _startPlayback(src) {
-                        video.src = src;
-                        video.controls = true;
-                        video.muted = false;
-                        video.play().catch(function(e) { logErr('Playback error: ' + e.message); });
-                    })(_usePrefetched);
-                    // Apply rotation (same block as the main path below).
-                    if (rotation === 90 || rotation === 270) {
-                        container.style.aspectRatio = '9 / 16';
-                    } else {
-                        container.style.aspectRatio = '16 / 9';
-                    }
-                    var vw = container.clientWidth || 360;
-                    var vh = container.clientHeight || 640;
-                    if (rotation !== 0) {
-                        var swap = (rotation === 90 || rotation === 270);
-                        video.style.position = 'absolute';
-                        video.style.top = '50%';
-                        video.style.left = '50%';
-                        if (swap) {
-                            video.style.width = vh + 'px';
-                            video.style.height = vw + 'px';
-                        }
-                        video.style.transform = 'translate(-50%, -50%) rotate(' + rotation + 'deg)';
-                        video.style.transformOrigin = 'center center';
-                    }
-                    return;
-                } else {
-                    // User picked a different segment — discard the prefetch.
-                    logDebug('playSegment: discarding prefetch for ' + _prefetchedSegment.path + ' (user chose ' + path + ')');
-                    URL.revokeObjectURL(_prefetchedSegment.url);
-                    _prefetchedSegment = null;
-                }
-            }
 
             if (video.srcObject) {
                 liveSrcObject = video.srcObject;
@@ -910,14 +821,6 @@
             var localPeerId = 'viewer-' + Math.random().toString(36).slice(2, 10);
             logDebug('local peerId for this attempt: ' + localPeerId);
 
-            // Relay-mode archive DataChannel: the camera opens it; we capture it here.
-            pc.ondatachannel = function(event) {
-                if (event.channel && event.channel.label === 'archive') {
-                    logDebug('ondatachannel: received "archive" DataChannel');
-                    ArchiveTransport.setDC(event.channel);
-                }
-            };
-
             // Helper that bails out if a newer connect() has superseded this one.
             function isStale(label) {
                 if (myEpoch !== currentEpoch) {
@@ -932,6 +835,17 @@
                 logDebug('added recvonly video transceiver');
             } catch (e) {
                 logErr('addTransceiver failed: ' + e.message);
+            }
+
+            // Create the archive DataChannel before createOffer() so the
+            // m=application section appears in the offer SDP. The camera
+            // receives it via peerConnection(_:didOpen:) on its side.
+            try {
+                var archiveDC = pc.createDataChannel('archive', { ordered: true });
+                ArchiveTransport.setDC(archiveDC);
+                logDebug('created archive DataChannel (will appear in offer SDP)');
+            } catch (e) {
+                logErr('createDataChannel failed: ' + e.message);
             }
 
             pc.ontrack = function(evt) {
