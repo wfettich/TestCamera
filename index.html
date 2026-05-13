@@ -359,22 +359,26 @@
 
         function _queueOrSend(path, rangeHeader, onProgress) {
             return new Promise(function(resolve, reject) {
-                if (!archiveDC) {
-                    reject(new Error('Archive not ready — peer not connected'));
+                // Fast path: DC is open right now, send immediately.
+                if (archiveDC && archiveDC.readyState === 'open') {
+                    _sendRequest(path, rangeHeader, onProgress).then(resolve).catch(reject);
                     return;
                 }
-                if (archiveDC.readyState === 'open') {
-                    _sendRequest(path, rangeHeader, onProgress).then(resolve).catch(reject);
-                } else {
-                    // Channel exists but not yet open; queue the request.
-                    var id = nextId++;
-                    var req = { id: id, method: 'GET', path: path };
-                    if (rangeHeader) req.range = rangeHeader;
-                    pendingMap[id] = { resolve: resolve, reject: reject, onProgress: onProgress || null,
-                                       contentLength: null, contentType: null, status: null,
-                                       chunks: [], received: 0, path: path };
-                    queuedRequests.push({ id: id, json: JSON.stringify(req) });
-                }
+                // Otherwise queue. This covers two pre-ready states:
+                //   (a) archiveDC === null — pc.ondatachannel hasn't fired yet
+                //       (still in the offer/answer round-trip).
+                //   (b) archiveDC exists but readyState !== 'open' — connecting.
+                // In both cases the queue is flushed by _processQueuedRequests
+                // from ch.onopen in _setupArchiveChannel. The user clicking the
+                // Archive tab a few hundred ms before SDP negotiation completes
+                // must not produce a rejection.
+                var id = nextId++;
+                var req = { id: id, method: 'GET', path: path };
+                if (rangeHeader) req.range = rangeHeader;
+                pendingMap[id] = { resolve: resolve, reject: reject, onProgress: onProgress || null,
+                                   contentLength: null, contentType: null, status: null,
+                                   chunks: [], received: 0, path: path };
+                queuedRequests.push({ id: id, json: JSON.stringify(req) });
             });
         }
 
