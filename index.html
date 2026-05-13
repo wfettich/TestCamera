@@ -161,6 +161,13 @@
             white-space: pre-wrap;
             color: #999;
         }
+        #download-progress {
+            display: none;
+            margin-top: 10px;
+            color: #aaa;
+            font-size: 13px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -186,6 +193,7 @@
     </div>
     <button id="retry-btn">Retry</button>
     <button id="download-log-btn">Download log</button>
+    <div id="download-progress"></div>
     <div id="camera-id-error">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
 
     <div id="debug">
@@ -203,6 +211,202 @@
     </div>
 
     <script>
+    // ArchiveTransport — abstracts archive fetch over HTTP (Direct Mode) or
+    // WebRTC DataChannel (Relay Mode). Public API:
+    //   ArchiveTransport.fetchJson(path)                       → Promise<object>
+    //   ArchiveTransport.fetchSegment(path, onProgress?)       → Promise<Blob>
+    //   ArchiveTransport.isRelayMode                           → boolean
+    //   ArchiveTransport.setDC(channel)                        → called by connect()
+    var ArchiveTransport = (function() {
+        var _isRelayMode = (function() {
+            var params = new URLSearchParams(location.search);
+            if (params.get('relay')) return true;
+            var host = location.hostname;
+            if (host === 'localhost' || host === '127.0.0.1') return false;
+            if (/^192\.168\./.test(host)) return false;
+            if (/^10\./.test(host)) return false;
+            if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
+            return true;
+        })();
+
+        var _token = (function() {
+            return new URLSearchParams(location.search).get('t') || '';
+        })();
+
+        function _tokenQuery() {
+            return '?t=' + encodeURIComponent(_token);
+        }
+
+        // ── Relay-mode state ──────────────────────────────────────────────────
+        var archiveDC      = null;   // RTCDataChannel, label "archive"
+        var archiveDCReady = false;
+        var pendingMap     = {};     // id → {resolve, reject, onProgress, contentLength, contentType, chunks, received}
+        var queuedRequests = [];     // [{id, json}] buffered before DC opens
+        var nextId         = 1;
+
+        function _processQueuedRequests() {
+            if (!archiveDC || archiveDC.readyState !== 'open') return;
+            var q = queuedRequests.slice();
+            queuedRequests = [];
+            q.forEach(function(item) {
+                try { archiveDC.send(item.json); } catch (e) {
+                    var p = pendingMap[item.id];
+                    if (p) { delete pendingMap[item.id]; p.reject(new Error('DC send failed: ' + e.message)); }
+                }
+            });
+        }
+
+        function _setupArchiveChannel(ch) {
+            archiveDC = ch;
+            archiveDCReady = false;
+            ch.binaryType = 'arraybuffer';
+            ch.onopen = function() {
+                archiveDCReady = true;
+                _processQueuedRequests();
+            };
+            ch.onmessage = _handleArchiveMessage;
+            ch.onerror = function(e) {
+                // Reject all pending requests on channel error.
+                var msg = (e && e.message) ? e.message : 'DataChannel error';
+                Object.keys(pendingMap).forEach(function(id) {
+                    var p = pendingMap[id];
+                    delete pendingMap[id];
+                    p.reject(new Error(msg));
+                });
+            };
+            ch.onclose = function() {
+                archiveDCReady = false;
+                archiveDC = null;
+            };
+        }
+
+        function _handleArchiveMessage(event) {
+            if (event.data instanceof ArrayBuffer) {
+                // Binary frame: first 4 bytes = request id (big-endian uint32).
+                var buf = event.data;
+                if (buf.byteLength < 4) return;
+                var view = new DataView(buf);
+                var id = view.getUint32(0, false); // big-endian
+                var p = pendingMap[id];
+                if (!p) return;
+                var chunk = new Uint8Array(buf, 4);
+                p.chunks.push(chunk);
+                p.received = (p.received || 0) + chunk.byteLength;
+                if (p.onProgress && p.contentLength) {
+                    try { p.onProgress(p.received, p.contentLength); } catch (_) {}
+                }
+            } else {
+                // Text frame: JSON control message.
+                var msg;
+                try { msg = JSON.parse(event.data); } catch (e) { return; }
+                var p2 = pendingMap[msg.id];
+                if (!p2) return;
+                if (msg.kind === 'header') {
+                    p2.contentLength = msg.contentLength || null;
+                    p2.contentType   = msg.contentType   || null;
+                    p2.status        = msg.status        || 200;
+                } else if (msg.kind === 'end') {
+                    delete pendingMap[msg.id];
+                    // Assemble chunks.
+                    var totalLen = 0;
+                    p2.chunks.forEach(function(c) { totalLen += c.byteLength; });
+                    var combined = new Uint8Array(totalLen);
+                    var offset = 0;
+                    p2.chunks.forEach(function(c) { combined.set(c, offset); offset += c.byteLength; });
+                    var ct = p2.contentType || '';
+                    if (ct.indexOf('application/json') !== -1 || (p2.path && /\.json$/.test(p2.path))) {
+                        try {
+                            p2.resolve(JSON.parse(new TextDecoder().decode(combined)));
+                        } catch (e) {
+                            p2.reject(new Error('JSON parse error: ' + e.message));
+                        }
+                    } else {
+                        p2.resolve(new Blob([combined], { type: ct || 'video/mp4' }));
+                    }
+                } else if (msg.kind === 'error') {
+                    delete pendingMap[msg.id];
+                    p2.reject(new Error(msg.message || ('HTTP ' + msg.status)));
+                }
+            }
+        }
+
+        function _sendRequest(path, rangeHeader, onProgress) {
+            return new Promise(function(resolve, reject) {
+                if (!_isRelayMode) {
+                    // Direct mode: fall back to fetch.
+                    reject(new Error('_sendRequest called in Direct mode — use fetch directly'));
+                    return;
+                }
+                if (!archiveDC || archiveDC.readyState !== 'open') {
+                    reject(new Error('Archive not ready — peer not connected'));
+                    return;
+                }
+                var id = nextId++;
+                var req = { id: id, method: 'GET', path: path };
+                if (rangeHeader) req.range = rangeHeader;
+                var json = JSON.stringify(req);
+                pendingMap[id] = { resolve: resolve, reject: reject, onProgress: onProgress || null,
+                                   contentLength: null, contentType: null, status: null,
+                                   chunks: [], received: 0, path: path };
+                try {
+                    archiveDC.send(json);
+                } catch (e) {
+                    delete pendingMap[id];
+                    reject(new Error('DC send failed: ' + e.message));
+                }
+            });
+        }
+
+        function _queueOrSend(path, rangeHeader, onProgress) {
+            return new Promise(function(resolve, reject) {
+                if (!archiveDC) {
+                    reject(new Error('Archive not ready — peer not connected'));
+                    return;
+                }
+                if (archiveDC.readyState === 'open') {
+                    _sendRequest(path, rangeHeader, onProgress).then(resolve).catch(reject);
+                } else {
+                    // Channel exists but not yet open; queue the request.
+                    var id = nextId++;
+                    var req = { id: id, method: 'GET', path: path };
+                    if (rangeHeader) req.range = rangeHeader;
+                    pendingMap[id] = { resolve: resolve, reject: reject, onProgress: onProgress || null,
+                                       contentLength: null, contentType: null, status: null,
+                                       chunks: [], received: 0, path: path };
+                    queuedRequests.push({ id: id, json: JSON.stringify(req) });
+                }
+            });
+        }
+
+        // ── Public API ────────────────────────────────────────────────────────
+        function fetchJson(path) {
+            if (!_isRelayMode) {
+                return fetch(path + _tokenQuery())
+                    .then(function(r) {
+                        if (r.status === 401) throw new Error('unauthorized');
+                        if (r.status === 404) throw new Error('archive not available');
+                        return r.json();
+                    });
+            }
+            return _queueOrSend(path, null, null);
+        }
+
+        function fetchSegment(path, onProgress) {
+            if (!_isRelayMode) {
+                return fetch(path + _tokenQuery()).then(function(r) { return r.blob(); });
+            }
+            return _queueOrSend(path, 'bytes=0-', onProgress);
+        }
+
+        return {
+            get isRelayMode() { return _isRelayMode; },
+            fetchJson: fetchJson,
+            fetchSegment: fetchSegment,
+            // Called from connect() when pc.ondatachannel fires with label "archive".
+            setDC: _setupArchiveChannel
+        };
+    })();
+
     (function() {
         const video   = document.getElementById('video');
         const status  = document.getElementById('status');
@@ -403,32 +607,48 @@
                 document.getElementById('video-container').style.display = 'none';
                 archiveContainer.style.display = 'block';
                 document.getElementById('status-bar').style.display = 'none';
-                if (isRelayMode) {
-                    archiveList.innerHTML = '';
-                    archiveUsage.textContent = '';
-                    archiveRelayMsg.style.display = 'block';
-                } else {
-                    archiveRelayMsg.style.display = 'none';
-                    fetchArchiveIndex();
-                }
+                archiveRelayMsg.style.display = 'none';
+                fetchArchiveIndex();
             }
         }
 
         function fetchArchiveIndex() {
-            console.info('Fetching archive index...');
+            logDebug('fetchArchiveIndex: relayMode=' + isRelayMode);
             archiveUsage.textContent = 'Loading archive...';
-            fetch('/archive/index.json' + tokenQuery())
-                .then(function(r) {
-                    if (r.status === 401) { throw new Error('unauthorized'); }
-                    if (r.status === 404) { throw new Error('archive not available'); }
-                    return r.json();
-                })
+            ArchiveTransport.fetchJson('/archive/index.json')
                 .then(function(data) {
-                    console.info('Archive index loaded:', data.days.length, 'days');
+                    logOk('Archive index loaded: ' + (data.days ? data.days.length : 0) + ' days');
                     renderArchive(data);
+                    // Prefetch the most-recent segment (last segment of the last day —
+                    // segments are sorted oldest-first by filename). Only in relay mode,
+                    // and only if we don't already have a prefetch in flight.
+                    if (isRelayMode && _prefetchedSegment === null &&
+                            data.days && data.days.length > 0) {
+                        var lastDay = data.days[data.days.length - 1];
+                        var lastSeg = lastDay && lastDay.segments &&
+                                      lastDay.segments[lastDay.segments.length - 1];
+                        if (lastSeg && lastSeg.path) {
+                            var prefetchPath = lastSeg.path;
+                            logDebug('prefetching most-recent segment: ' + prefetchPath);
+                            ArchiveTransport.fetchSegment(prefetchPath).then(function(blob) {
+                                // Only store if the slot is still empty (user hasn't
+                                // clicked anything yet) and path hasn't been superseded.
+                                if (_prefetchedSegment === null) {
+                                    _prefetchedSegment = {
+                                        path: prefetchPath,
+                                        blob: blob,
+                                        url: URL.createObjectURL(blob)
+                                    };
+                                    logOk('prefetch complete for ' + prefetchPath);
+                                }
+                            }).catch(function(e) {
+                                logDebug('prefetch failed (non-fatal): ' + e.message);
+                            });
+                        }
+                    }
                 })
                 .catch(function(e) {
-                    console.warn('Failed to load archive index:', e);
+                    logWarn('Failed to load archive index: ' + e.message);
                     archiveUsage.textContent = 'Archive unavailable.';
                     archiveList.innerHTML = '';
                 });
@@ -459,9 +679,74 @@
             archiveList.innerHTML = html;
         }
 
+        var _prevSegmentBlobURL = null;
+        // Prefetched segment: { path, blob, url } or null.
+        var _prefetchedSegment = null;
+
         window.playSegment = function(path, rotation) {
             rotation = rotation || 0;
-            logOk('playSegment: ' + path + ' rotation=' + rotation);
+            logOk('playSegment: ' + path + ' rotation=' + rotation + ' relayMode=' + isRelayMode);
+
+            // Relay mode: check whether we have a prefetched blob for this segment.
+            if (isRelayMode && _prefetchedSegment) {
+                if (_prefetchedSegment.path === path) {
+                    logOk('playSegment: using prefetched blob for ' + path);
+                    if (_prevSegmentBlobURL) URL.revokeObjectURL(_prevSegmentBlobURL);
+                    _prevSegmentBlobURL = _prefetchedSegment.url;
+                    _prefetchedSegment = null;
+                    // Fall through to the rest of the function to set up the video
+                    // element and rotation — but skip the fetch block.
+                    // We signal this via a local variable.
+                    var _usePrefetched = _prevSegmentBlobURL;
+                    if (video.srcObject) { liveSrcObject = video.srcObject; video.srcObject = null; }
+                    video.style.position = '';
+                    video.style.top = '';
+                    video.style.left = '';
+                    video.style.width = '';
+                    video.style.height = '';
+                    video.style.transform = '';
+                    video.style.transformOrigin = '';
+                    var container = document.getElementById('video-container');
+                    container.style.display = 'block';
+                    container.style.position = 'relative';
+                    archiveContainer.style.display = 'none';
+                    document.getElementById('status-bar').style.display = 'none';
+                    document.getElementById('download-progress').style.display = 'none';
+                    (function _startPlayback(src) {
+                        video.src = src;
+                        video.controls = true;
+                        video.muted = false;
+                        video.play().catch(function(e) { logErr('Playback error: ' + e.message); });
+                    })(_usePrefetched);
+                    // Apply rotation (same block as the main path below).
+                    if (rotation === 90 || rotation === 270) {
+                        container.style.aspectRatio = '9 / 16';
+                    } else {
+                        container.style.aspectRatio = '16 / 9';
+                    }
+                    var vw = container.clientWidth || 360;
+                    var vh = container.clientHeight || 640;
+                    if (rotation !== 0) {
+                        var swap = (rotation === 90 || rotation === 270);
+                        video.style.position = 'absolute';
+                        video.style.top = '50%';
+                        video.style.left = '50%';
+                        if (swap) {
+                            video.style.width = vh + 'px';
+                            video.style.height = vw + 'px';
+                        }
+                        video.style.transform = 'translate(-50%, -50%) rotate(' + rotation + 'deg)';
+                        video.style.transformOrigin = 'center center';
+                    }
+                    return;
+                } else {
+                    // User picked a different segment — discard the prefetch.
+                    logDebug('playSegment: discarding prefetch for ' + _prefetchedSegment.path + ' (user chose ' + path + ')');
+                    URL.revokeObjectURL(_prefetchedSegment.url);
+                    _prefetchedSegment = null;
+                }
+            }
+
             if (video.srcObject) {
                 liveSrcObject = video.srcObject;
                 video.srcObject = null;
@@ -474,15 +759,47 @@
             video.style.height = '';
             video.style.transform = '';
             video.style.transformOrigin = '';
-            video.src = path + tokenQuery();
-            video.controls = true;
-            video.muted = false;
-            video.play().catch(function(e) { logErr('Playback error: ' + e.message); });
+
             var container = document.getElementById('video-container');
             container.style.display = 'block';
             container.style.position = 'relative';
             archiveContainer.style.display = 'none';
             document.getElementById('status-bar').style.display = 'none';
+
+            var downloadProgress = document.getElementById('download-progress');
+
+            function _startPlayback(src) {
+                video.src = src;
+                video.controls = true;
+                video.muted = false;
+                video.play().catch(function(e) { logErr('Playback error: ' + e.message); });
+            }
+
+            if (isRelayMode) {
+                // Relay mode: fetch the segment blob via DataChannel, then play.
+                downloadProgress.textContent = 'Downloading…';
+                downloadProgress.style.display = 'block';
+                ArchiveTransport.fetchSegment(path, function(received, total) {
+                    downloadProgress.textContent = 'Downloading… ' +
+                        Math.floor(received / 1024 / 1024) + ' MB / ' +
+                        Math.floor(total / 1024 / 1024) + ' MB';
+                }).then(function(blob) {
+                    downloadProgress.style.display = 'none';
+                    if (_prevSegmentBlobURL) {
+                        URL.revokeObjectURL(_prevSegmentBlobURL);
+                        _prevSegmentBlobURL = null;
+                    }
+                    var url = URL.createObjectURL(blob);
+                    _prevSegmentBlobURL = url;
+                    _startPlayback(url);
+                }).catch(function(e) {
+                    downloadProgress.textContent = 'Download failed: ' + e.message;
+                    logErr('fetchSegment failed: ' + e.message);
+                });
+            } else {
+                // Direct mode: set src directly (unchanged behaviour).
+                _startPlayback(path + tokenQuery());
+            }
             // Use the server-provided rotation hint (parsed from the MP4 tkhd
             // matrix). Browsers disagree on whether videoWidth/videoHeight
             // reflect post-rotation dimensions, so we never trust them here.
@@ -588,6 +905,14 @@
             // (which used to drop every early candidate).
             var localPeerId = 'viewer-' + Math.random().toString(36).slice(2, 10);
             logDebug('local peerId for this attempt: ' + localPeerId);
+
+            // Relay-mode archive DataChannel: the camera opens it; we capture it here.
+            pc.ondatachannel = function(event) {
+                if (event.channel && event.channel.label === 'archive') {
+                    logDebug('ondatachannel: received "archive" DataChannel');
+                    ArchiveTransport.setDC(event.channel);
+                }
+            };
 
             // Helper that bails out if a newer connect() has superseded this one.
             function isStale(label) {
