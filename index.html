@@ -425,6 +425,14 @@
         const tabArchive = document.getElementById('tab-archive');
         const MAX_RETRIES = 3;
         var liveSrcObject = null;
+        // Which tab the user is currently looking at ('live' | 'archive').
+        // In Direct Mode the archive is plain HTTP and does not need the
+        // WebRTC peer at all, so a live-peer failure while the user is on
+        // the Archive tab must NOT surface a fatal "connection timeout" /
+        // auto-download — the archive is still perfectly usable. In Relay
+        // Mode the archive rides the peer's DataChannel, so peer health
+        // always matters there regardless of tab.
+        var currentTab = 'live';
         // Persistent across reconnects so we never lose the diagnostic history
         // that led up to a failure. Cleared only by a fresh page load.
         var debugLogLines = [];
@@ -576,8 +584,18 @@
             return '?t=' + encodeURIComponent(accessToken);
         }
 
+        // True when the live WebRTC peer's connectivity is something the user
+        // can actually perceive right now. In Relay Mode the archive needs the
+        // peer (DataChannel), so it's always true. In Direct Mode the archive
+        // is independent HTTP, so a dead peer is invisible while on the
+        // Archive tab — we must not raise alarms or auto-download the log.
+        function liveConnectivityVisibleToUser() {
+            return isRelayMode || currentTab === 'live';
+        }
+
         function switchTab(tab) {
             logDebug('switchTab -> ' + tab);
+            currentTab = tab;
             if (tab === 'live') {
                 tabLive.classList.add('active');
                 tabArchive.classList.remove('active');
@@ -604,6 +622,15 @@
                 if (liveSrcObject) {
                     video.srcObject = liveSrcObject;
                     video.play().catch(function(){});
+                }
+                // If the peer died while the user was browsing the archive
+                // (in Direct Mode we suppress reconnect alarms, and retries
+                // may have been exhausted silently), re-establish it now that
+                // the user actually wants to see live video again.
+                var st = pc && pc.connectionState;
+                if (!pc || st === 'failed' || st === 'closed' || st === 'disconnected') {
+                    logDebug('switchTab(live): peer state=' + st + ' — re-establishing connection');
+                    connect(0);
                 }
             } else {
                 tabLive.classList.remove('active');
@@ -797,9 +824,16 @@
             // doesn't outlive a failed connection.
             try { video.srcObject = null; } catch (_) {}
 
-            // Watchdog: auto-download log if still not connected after 45s
+            // Watchdog: auto-download log if still not connected after 45s.
+            // Suppressed when the live peer isn't visible to the user (Direct
+            // Mode + Archive tab) — the archive works over HTTP regardless and
+            // an unsolicited log download mid-browse is just noise.
             var watchdogTimer = setTimeout(function() {
                 if (pill.textContent !== 'connected') {
+                    if (!liveConnectivityVisibleToUser()) {
+                        logDebug('WATCHDOG: peer not connected after 45s but user is on Archive tab in Direct Mode — archive is HTTP, skipping auto-download');
+                        return;
+                    }
                     logErr('WATCHDOG: still not connected after 45s (pill=' + pill.textContent + ', pc=' + pc.connectionState + ', ice=' + pc.iceConnectionState + ', sig=' + pc.signalingState + ')');
                     autoDownloadLog('connection timeout (45s)');
                 }
@@ -1174,6 +1208,14 @@
                         logDebug('reconnect timer fired — calling connect(' + (attempt + 1) + ')');
                         connect(attempt + 1);
                     }, delay);
+                } else if (!liveConnectivityVisibleToUser()) {
+                    // Direct Mode + Archive tab: the live peer is dead but the
+                    // archive is independent HTTP and still works. Don't raise
+                    // the fatal "Connection failed" UI or auto-download the
+                    // log. Leave a Retry affordance so switching back to Live
+                    // (or tapping Retry) can re-establish the peer on demand.
+                    logWarn('scheduleReconnect: max retries exhausted but live peer not visible to user (Direct Mode + Archive) — keeping archive usable, reason="' + reason + '"');
+                    retryBtn.style.display = 'inline-block';
                 } else {
                     logErr('scheduleReconnect: max retries (' + MAX_RETRIES + ') exhausted, reason="' + reason + '"');
                     setPill('failed');
