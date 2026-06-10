@@ -840,11 +840,11 @@
             }, 45000);
 
             var iceServers = [
-                { urls: 'stun:stun.relay.metered.ca:80' },
-                { urls: 'turn:global.relay.metered.ca:80', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                { urls: 'turn:global.relay.metered.ca:443', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
-                { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'stun:openrelay.metered.ca:80' },
+                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+                { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+                { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
             ];
             logDebug('creating RTCPeerConnection with ' + iceServers.length + ' ICE servers');
             pc = new RTCPeerConnection({ iceServers: iceServers });
