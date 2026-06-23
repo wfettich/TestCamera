@@ -958,6 +958,11 @@
             };
 
             var pendingLocalCandidates = [];
+            // Remote ICE candidates that arrive before setRemoteDescription(answer)
+            // completes. addIceCandidate() throws ("remote description was null") if
+            // called too early, silently losing the candidate — so we buffer here and
+            // flush once the answer is applied.
+            var pendingRemoteCandidates = [];
 
             pc.onicecandidateerror = function(evt) {
                 if (isStale('onicecandidateerror')) return;
@@ -1195,6 +1200,14 @@
                             if (myEpoch !== currentEpoch) return;
                             logOk('setRemoteDescription done — ICE will start');
                             status.textContent = 'Answer received; ICE connecting...';
+                            // Flush remote candidates that arrived before the answer.
+                            var queued = pendingRemoteCandidates.splice(0);
+                            if (queued.length) logDebug('flushing ' + queued.length + ' queued remote ICE candidate(s)');
+                            queued.forEach(function(c) {
+                                thisPc.addIceCandidate(c).catch(function(e) {
+                                    logWarn('addIceCandidate (flushed) failed: ' + e.message);
+                                });
+                            });
                         })
                         .catch(function(e) {
                             logErr('setRemoteDescription failed: ' + e.message);
@@ -1203,11 +1216,18 @@
                     var typeMatch = String(msg.candidate).match(/typ (\S+)/);
                     var typ = typeMatch ? typeMatch[1] : '?';
                     logDebug('remote ICE candidate (typ=' + typ + '): ' + String(msg.candidate).substring(0, 80) + '...');
-                    pc.addIceCandidate(new RTCIceCandidate({
+                    var remoteCand = new RTCIceCandidate({
                         candidate: msg.candidate,
                         sdpMid: msg.sdpMid || '0',
                         sdpMLineIndex: msg.sdpMLineIndex || 0
-                    })).catch(function(e) { logWarn('addIceCandidate failed: ' + e.message); });
+                    });
+                    if (!thisPc.remoteDescription || !thisPc.remoteDescription.type) {
+                        // Answer not applied yet — buffer until setRemoteDescription resolves.
+                        pendingRemoteCandidates.push(remoteCand);
+                        logDebug('queued remote ICE candidate (answer not set), queue=' + pendingRemoteCandidates.length);
+                    } else {
+                        thisPc.addIceCandidate(remoteCand).catch(function(e) { logWarn('addIceCandidate failed: ' + e.message); });
+                    }
                 } else {
                     logWarn('ws message: unknown type=' + msg.type + ' keys=' + Object.keys(msg).join(','));
                 }
