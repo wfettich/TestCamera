@@ -839,13 +839,24 @@
                 }
             }, 45000);
 
-            var iceServers = [
+            // TURN provider: default 'metered' (paid, working). ?turn=openrelay selects
+            // the free OpenRelay tier (currently unreliable). Mirrors the app's
+            // Settings → Relay (TURN) switch.
+            var turnProvider = (new URLSearchParams(location.search).get('turn') || 'metered').toLowerCase();
+            var iceServers = turnProvider === 'openrelay' ? [
                 { urls: 'stun:openrelay.metered.ca:80' },
                 { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
                 { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
                 { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
                 { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+            ] : [
+                { urls: 'stun:stun.relay.metered.ca:80' },
+                { urls: 'turn:global.relay.metered.ca:80', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'turn:global.relay.metered.ca:443', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
+                { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '0210aae87166e20a16a25201', credential: '0fKR0dfpZnnEWhjm' },
             ];
+            logDebug('TURN provider: ' + turnProvider);
             // Test toggle: ?forceRelay=1 sets iceTransportPolicy:'relay' so media
             // is forced through TURN (openrelay). Use this to exercise the camera's
             // RelayBandwidthMonitor (relay-byte/cost accounting) on a network that
