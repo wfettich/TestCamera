@@ -846,8 +846,19 @@
                 { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
                 { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
             ];
-            logDebug('creating RTCPeerConnection with ' + iceServers.length + ' ICE servers');
-            pc = new RTCPeerConnection({ iceServers: iceServers });
+            // Test toggle: ?forceRelay=1 sets iceTransportPolicy:'relay' so media
+            // is forced through TURN (openrelay). Use this to exercise the camera's
+            // RelayBandwidthMonitor (relay-byte/cost accounting) on a network that
+            // would otherwise pick a direct/STUN path. NOT the same as ?relay
+            // (which selects cloud-relay signaling mode).
+            var forceRelay = new URLSearchParams(location.search).get('forceRelay');
+            var pcConfig = { iceServers: iceServers };
+            if (forceRelay) {
+                pcConfig.iceTransportPolicy = 'relay';
+                logDebug('forceRelay=1 → iceTransportPolicy=relay (TURN-only)');
+            }
+            logDebug('creating RTCPeerConnection with ' + iceServers.length + ' ICE servers' + (forceRelay ? ' (relay-only)' : ''));
+            pc = new RTCPeerConnection(pcConfig);
             var thisPc = pc;
             // Generate the peerId now so we can send local ICE candidates as
             // soon as they're gathered, instead of waiting for the answer
