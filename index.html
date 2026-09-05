@@ -72,6 +72,15 @@
         #telemetry-overlay span.ok   { color: #44cc88; }
         #telemetry-overlay span.warn { color: #ffaa44; }
         #telemetry-overlay span.err  { color: #ff6688; }
+        /* Thermal 4-segment bar (one segment per ProcessInfo.ThermalState). */
+        .thermal-bar { display: inline-flex; align-items: center; gap: 4px; }
+        .thermal-bar .segs { display: inline-flex; gap: 2px; }
+        .thermal-bar .segs i {
+            width: 5px; height: 11px;
+            background: rgba(255,255,255,0.22);
+            border-radius: 2px;
+            display: inline-block;
+        }
         #status-bar {
             margin-top: 10px;
             display: flex;
@@ -203,7 +212,7 @@
         <video id="video" autoplay muted playsinline></video>
         <div id="telemetry-overlay">
             <span id="ov-battery">🔋 -</span>
-            <span id="ov-thermal">🌡 -</span>
+            <span id="ov-thermal" class="thermal-bar">🌡<span class="segs"><i></i><i></i><i></i><i></i></span></span>
         </div>
     </div>
     <div id="archive-container">
@@ -621,12 +630,22 @@
         }
         function fmtThermalOv(el, state) {
             if (!el) return;
-            el.textContent = '🌡 ' + (state || '?');
-            var cls = '';
-            if (state === 'nominal') cls = 'ok';
-            else if (state === 'serious' || state === 'critical') cls = 'err';
-            else cls = 'warn'; // fair / unknown
-            el.className = cls;
+            // 4 segments, one per ProcessInfo.ThermalState. Fill count =
+            // severity; lit segments take the state color, the rest stay grey.
+            var n = 0, color = '', cls = '';
+            switch (state) {
+                case 'nominal':  n = 1; color = '#44cc88'; cls = 'ok';   break;
+                case 'fair':     n = 2; color = '#ffaa44'; cls = 'warn'; break;
+                case 'serious':  n = 3; color = '#ff8844'; cls = 'err';  break;
+                case 'critical': n = 4; color = '#ff6688'; cls = 'err';  break;
+                default:         n = 0;                    cls = 'warn'; break; // unknown
+            }
+            el.classList.remove('ok', 'warn', 'err');
+            el.classList.add(cls);
+            var segs = el.querySelectorAll('.segs i');
+            for (var i = 0; i < segs.length; i++) {
+                segs[i].style.background = (i < n) ? color : '';
+            }
         }
 
         // Extract cameraId from ?cameraId= query parameter.
