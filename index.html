@@ -206,6 +206,7 @@
             <div><span class="label">Video track:</span><span class="value" id="dbg-track">none</span></div>
             <div><span class="label">Bytes rcvd:</span><span class="value" id="dbg-bytes">0</span></div>
             <div><span class="label">Pkts rcvd:</span><span class="value" id="dbg-pkts">0</span></div>
+            <div><span class="label">Attention:</span><span class="value ok" id="dbg-attention">visible</span></div>
         </div>
         <div id="debug-log"></div>
     </div>
@@ -463,6 +464,7 @@
             track: document.getElementById('dbg-track'),
             bytes: document.getElementById('dbg-bytes'),
             pkts:  document.getElementById('dbg-pkts'),
+            attention: document.getElementById('dbg-attention'),
             log:   document.getElementById('debug-log')
         };
 
@@ -533,6 +535,12 @@
         window.addEventListener('offline', function() { logWarn('network: offline'); });
         document.addEventListener('visibilitychange', function() {
             logDebug('visibility: ' + document.visibilityState);
+            // Viewer-attention pause: tell the camera when this tab is hidden so
+            // it can stop sending media (saves its bandwidth always, and — in
+            // webcam mode — power/heat by stopping capture entirely). The camera
+            // mutes this peer's senders; ICE/archive DC untouched.
+            if (document.hidden) { attentionActive = false; sendAttention(false); }
+            else                 { attentionActive = true;  sendAttention(true);  }
         });
 
         function fmtState(el, val) {
@@ -568,6 +576,43 @@
         var pc = null;
         var assignedPeerId = null;
         var statsTimer = null;
+
+        // ---- Viewer-attention pause state ----
+        // `attentionActive` tracks whether this tab is visible. `sendAttention`
+        // reports it to the camera over the relay WebSocket so the camera can
+        // mute this peer's senders (and, in webcam mode, stop capturing when no
+        // one is watching). Escape hatch: ?pauseOnInattention=0 disables it.
+        // `pendingAttention` buffers a change that fired before the camera
+        // confirmed our peerId (mirrors the early-ICE-candidate buffering).
+        var pauseOnInattention = (function() {
+            var p = new URLSearchParams(location.search).get('pauseOnInattention');
+            return p !== '0' && p !== 'false';
+        })();
+        var attentionActive = !document.hidden;
+        var pendingAttention = null;
+        function sendAttention(active) {
+            if (!pauseOnInattention) return;
+            // The indicator reflects *this viewer's* attention state, so update
+            // it immediately even when the message is buffered (the camera
+            // hasn't confirmed our peerId yet).
+            if (dbg.attention) {
+                dbg.attention.textContent = active ? 'visible' : 'hidden';
+                dbg.attention.className = 'value ' + (active ? 'ok' : 'warn');
+            }
+            if (!ws || ws.readyState !== 1 || !assignedPeerId) {
+                pendingAttention = active;
+                logDebug('sendAttention active=' + active + ' buffered (ws=' + (ws ? ws.readyState : 'null') + ', peerId=' + assignedPeerId + ')');
+                return;
+            }
+            logDebug('sendAttention active=' + active + ' peerId=' + assignedPeerId);
+            try {
+                ws.send(JSON.stringify({ type: 'viewer_active', peerId: assignedPeerId, active: active }));
+            } catch (e) { logWarn('sendAttention failed: ' + e.message); }
+        }
+        if (dbg.attention) {
+            dbg.attention.textContent = attentionActive ? 'visible' : 'hidden';
+            dbg.attention.className = 'value ' + (attentionActive ? 'ok' : 'warn');
+        }
         // Monotonic counter incremented on every connect() call. Each connect()
         // captures its own myEpoch and short-circuits any callbacks that fire
         // after a newer connect has started — so old PC failure callbacks can
@@ -1195,6 +1240,16 @@
                         logWarn('answer peerId mismatch — local=' + localPeerId + ' answer=' + msg.peerId);
                     }
                     logOk('answer received from ' + msg.peerId + ', SDP len=' + msg.sdp.length);
+                    // Now that the camera has confirmed our peerId, report our
+                    // current attention state (covers a tab that was hidden
+                    // during the offer/answer round-trip). No-op if nothing
+                    // was buffered.
+                    if (pendingAttention !== null) {
+                        sendAttention(pendingAttention);
+                        pendingAttention = null;
+                    } else {
+                        sendAttention(attentionActive);
+                    }
                     thisPc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
                         .then(function() {
                             if (myEpoch !== currentEpoch) return;
