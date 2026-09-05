@@ -207,6 +207,8 @@
             <div><span class="label">Bytes rcvd:</span><span class="value" id="dbg-bytes">0</span></div>
             <div><span class="label">Pkts rcvd:</span><span class="value" id="dbg-pkts">0</span></div>
             <div><span class="label">Attention:</span><span class="value ok" id="dbg-attention">visible</span></div>
+            <div><span class="label">Battery:</span><span class="value" id="dbg-battery">-</span></div>
+            <div><span class="label">Thermal:</span><span class="value" id="dbg-thermal">-</span></div>
         </div>
         <div id="debug-log"></div>
     </div>
@@ -465,6 +467,8 @@
             bytes: document.getElementById('dbg-bytes'),
             pkts:  document.getElementById('dbg-pkts'),
             attention: document.getElementById('dbg-attention'),
+            battery: document.getElementById('dbg-battery'),
+            thermal: document.getElementById('dbg-thermal'),
             log:   document.getElementById('debug-log')
         };
 
@@ -550,6 +554,29 @@
                 (val === 'connected' || val === 'complete' ? ' ok' :
                  val === 'failed' || val === 'closed' ? ' err' :
                  val === 'checking' || val === 'connecting' ? ' warn' : '');
+        }
+        // Camera telemetry: battery + thermal. Rendered on receipt of a
+        // {type:"telemetry"} relay message (camera pushes on 30s tick + state
+        // changes); no polling needed in relay mode.
+        function fmtBattery(el, snap) {
+            if (!el || !snap) return;
+            var txt = (snap.levelText || (snap.level >= 0 ? snap.level + '%' : 'n/a')) +
+                      ' ' + (snap.state || '?');
+            el.textContent = txt;
+            var cls = 'value';
+            if (snap.state === 'unknown' || snap.level < 0) cls += ' warn';
+            else if (snap.state === 'unplugged' && snap.level >= 0 && snap.level < 20) cls += ' err';
+            else cls += ' ok';
+            el.className = cls;
+        }
+        function fmtThermal(el, state) {
+            if (!el) return;
+            el.textContent = state || '?';
+            var cls = 'value';
+            if (state === 'nominal') cls += ' ok';
+            else if (state === 'serious' || state === 'critical') cls += ' err';
+            else cls += ' warn'; // fair / unknown
+            el.className = cls;
         }
 
         // Extract cameraId from ?cameraId= query parameter.
@@ -1283,6 +1310,11 @@
                     } else {
                         thisPc.addIceCandidate(remoteCand).catch(function(e) { logWarn('addIceCandidate failed: ' + e.message); });
                     }
+                } else if (msg.type === 'telemetry') {
+                    // Camera health: battery + thermal. Camera-wide; pushed
+                    // on 30s tick + state changes. Render on receipt.
+                    fmtBattery(dbg.battery, msg.battery);
+                    fmtThermal(dbg.thermal, msg.thermal);
                 } else {
                     logWarn('ws message: unknown type=' + msg.type + ' keys=' + Object.keys(msg).join(','));
                 }
