@@ -1331,10 +1331,16 @@
                 }
 
                 if (msg.type === 'answer' && msg.sdp) {
-                    assignedPeerId = msg.peerId;
-                    if (msg.peerId !== localPeerId) {
-                        logWarn('answer peerId mismatch — local=' + localPeerId + ' answer=' + msg.peerId);
+                    // The relay broadcasts every camera message to ALL viewers,
+                    // so we receive answers meant for other viewers too. Ignore
+                    // any answer not addressed to our own peerId — adopting a
+                    // foreign peerId would make us report viewer_active for it
+                    // (muting that peer on the camera) and apply the wrong SDP.
+                    if (msg.peerId && msg.peerId !== localPeerId) {
+                        logDebug('ignoring answer for peer ' + msg.peerId + ' (not us: ' + localPeerId + ')');
+                        return;
                     }
+                    assignedPeerId = msg.peerId;
                     logOk('answer received from ' + msg.peerId + ', SDP len=' + msg.sdp.length);
                     // Now that the camera has confirmed our peerId, report our
                     // current attention state (covers a tab that was hidden
@@ -1364,6 +1370,11 @@
                             logErr('setRemoteDescription failed: ' + e.message);
                         });
                 } else if (msg.type === 'ice' && msg.candidate) {
+                    // Same relay broadcast: ignore ICE candidates the camera
+                    // generated for other viewers' peer connections.
+                    if (msg.peerId && msg.peerId !== localPeerId) {
+                        return;
+                    }
                     var typeMatch = String(msg.candidate).match(/typ (\S+)/);
                     var typ = typeMatch ? typeMatch[1] : '?';
                     logDebug('remote ICE candidate (typ=' + typ + '): ' + String(msg.candidate).substring(0, 80) + '...');
