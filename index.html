@@ -193,6 +193,20 @@
             white-space: pre-wrap;
             color: #999;
         }
+        #archive-back-btn {
+            display: none;
+            margin: 0 0 10px 0;
+            padding: 8px 14px;
+            background: #2a2a2a;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .segment-dur { color: #9ad; margin-left: 6px; }
+        .segment-badge { color: #f90; font-size: 11px; margin-left: 6px; border: 1px solid #f90; border-radius: 4px; padding: 0 4px; }
+        #archive-refreshed { color: #666; font-size: 11px; margin: 4px 0 8px; }
         #download-progress {
             display: none;
             margin-top: 10px;
@@ -208,6 +222,7 @@
         <div class="tab active" id="tab-live">Live</div>
         <div class="tab" id="tab-archive">Archive</div>
     </div>
+    <button id="archive-back-btn" onclick="backToArchiveList()">&larr; Back to list</button>
     <div id="video-container">
         <video id="video" autoplay muted playsinline></video>
         <div id="telemetry-overlay">
@@ -217,6 +232,7 @@
     </div>
     <div id="archive-container">
         <div id="archive-usage">Loading archive...</div>
+        <div id="archive-refreshed"></div>
         <div id="archive-list"></div>
         <div id="archive-relay-msg" style="display:none;">
             Archive viewing requires Direct signaling mode.<br>
@@ -742,6 +758,7 @@
                 tabArchive.classList.remove('active');
                 document.getElementById('video-container').style.display = 'block';
                 archiveContainer.style.display = 'none';
+                document.getElementById('archive-back-btn').style.display = 'none';
                 document.getElementById('status-bar').style.display = 'flex';
                 // Reset all styles archive playback may have applied.
                 document.getElementById('video-container').style.aspectRatio = '16 / 9';
@@ -780,24 +797,74 @@
                 archiveContainer.style.display = 'block';
                 document.getElementById('status-bar').style.display = 'none';
                 archiveRelayMsg.style.display = 'none';
+                document.getElementById('archive-back-btn').style.display = 'none';
+                if (video.src) { try { video.pause(); } catch (_) {} }
                 fetchArchiveIndex();
             }
         }
 
-        function fetchArchiveIndex() {
-            logDebug('fetchArchiveIndex: relayMode=' + isRelayMode);
-            archiveUsage.textContent = 'Loading archive...';
+        function fetchArchiveIndex(quiet) {
+            logDebug('fetchArchiveIndex: relayMode=' + isRelayMode + (quiet ? ' (auto-refresh)' : ''));
+            if (!quiet) archiveUsage.textContent = 'Loading archive...';
+            startArchivePolling();
             ArchiveTransport.fetchJson('/archive/index.json')
                 .then(function(data) {
-                    logOk('Archive index loaded: ' + (data.days ? data.days.length : 0) + ' days');
+                    if (!quiet) logOk('Archive index loaded: ' + (data.days ? data.days.length : 0) + ' days');
                     renderArchive(data);
+                    document.getElementById('archive-refreshed').textContent =
+                        'Updated ' + new Date().toLocaleTimeString() + ' \u00b7 auto-refreshes every 15 s';
                 })
                 .catch(function(e) {
                     logWarn('Failed to load archive index: ' + e.message);
+                    if (quiet) return;
                     archiveUsage.textContent = 'Archive unavailable.';
                     archiveList.innerHTML = '';
                 });
         }
+
+        function formatDuration(ms) {
+            if (ms == null || !(ms > 0)) return '';
+            var t = Math.round(ms / 1000);
+            var m = Math.floor(t / 60), sec = t % 60;
+            return m + ':' + (sec < 10 ? '0' : '') + sec;
+        }
+
+        // Keep the list fresh while it is on screen: re-fetch the index every
+        // 15 s (only on the Archive tab, never during playback, and only when
+        // the page is visible). Re-rendering replaces innerHTML, so playback
+        // is never disturbed.
+        var archivePollTimer = null;
+        function archiveListVisible() {
+            return currentTab === 'archive' && archiveContainer.style.display !== 'none' && !document.hidden;
+        }
+        function startArchivePolling() {
+            if (archivePollTimer) return;
+            archivePollTimer = setInterval(function() {
+                if (archiveListVisible()) fetchArchiveIndex(true);
+            }, 15000);
+        }
+
+        window.backToArchiveList = function() {
+            try { video.pause(); } catch (_) {}
+            video.removeAttribute('src');
+            video.load();
+            video.controls = false;
+            video.muted = true;
+            video.style.position = '';
+            video.style.top = '';
+            video.style.left = '';
+            video.style.width = '';
+            video.style.height = '';
+            video.style.transform = '';
+            video.style.transformOrigin = '';
+            document.getElementById('download-progress').style.display = 'none';
+            document.getElementById('archive-back-btn').style.display = 'none';
+            if (_prevSegmentBlobURL) {
+                URL.revokeObjectURL(_prevSegmentBlobURL);
+                _prevSegmentBlobURL = null;
+            }
+            switchTab('archive');
+        };
 
         function renderArchive(data) {
             var usedGB = (data.usedBytes / 1e9).toFixed(2);
@@ -815,8 +882,12 @@
                 day.segments.forEach(function(seg) {
                     var sizeMB = (seg.bytes / 1e6).toFixed(1);
                     var rot = (seg.rotation == null) ? 0 : (seg.rotation | 0);
+                    var dur = formatDuration(seg.durationMs);
+                    var badge = (seg.trigger === 'motion') ? '<span class="segment-badge">motion</span>' : '';
                     html += '<div class="segment-row" onclick="playSegment(\'' + seg.path + '\', ' + rot + ')">' +
-                        '<span class="segment-info">' + escapeHtml(seg.start) + ' &middot; ' + sizeMB + ' MB</span>' +
+                        '<span class="segment-info">' + escapeHtml(seg.start) +
+                        (dur ? '<span class="segment-dur">' + dur + '</span>' : '') + badge +
+                        ' &middot; ' + sizeMB + ' MB</span>' +
                         '<span class="segment-play">Play</span></div>';
                 });
                 html += '</div>';
@@ -848,6 +919,7 @@
             container.style.position = 'relative';
             archiveContainer.style.display = 'none';
             document.getElementById('status-bar').style.display = 'none';
+            document.getElementById('archive-back-btn').style.display = 'inline-block';
 
             var downloadProgress = document.getElementById('download-progress');
 
