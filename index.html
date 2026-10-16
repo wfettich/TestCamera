@@ -807,20 +807,35 @@
             logDebug('fetchArchiveIndex: relayMode=' + isRelayMode + (quiet ? ' (auto-refresh)' : ''));
             if (!quiet) archiveUsage.textContent = 'Loading archive...';
             startArchivePolling();
+            var timeoutTimer = null;
+            if (!quiet) {
+                timeoutTimer = setTimeout(function() {
+                    timeoutTimer = null;
+                    logWarn('Archive index: no reply from camera after 10 s');
+                    archiveUsage.textContent = 'Camera didn\u2019t respond.';
+                    archiveList.innerHTML = '<div style="color:#888;padding:20px;text-align:center;">' +
+                        'The camera did not answer the archive request.<br><br>' +
+                        '<button onclick="fetchArchiveIndex(false)" style="padding:8px 16px;">Retry</button></div>';
+                }, 10000);
+            }
             ArchiveTransport.fetchJson('/archive/index.json')
                 .then(function(data) {
+                    if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
                     if (!quiet) logOk('Archive index loaded: ' + (data.days ? data.days.length : 0) + ' days');
                     renderArchive(data);
                     document.getElementById('archive-refreshed').textContent =
                         'Updated ' + new Date().toLocaleTimeString() + ' \u00b7 auto-refreshes every 15 s';
                 })
                 .catch(function(e) {
+                    if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
                     logWarn('Failed to load archive index: ' + e.message);
                     if (quiet) return;
                     archiveUsage.textContent = 'Archive unavailable.';
                     archiveList.innerHTML = '';
                 });
         }
+
+        window.fetchArchiveIndex = fetchArchiveIndex;
 
         function formatDuration(ms) {
             if (ms == null || !(ms > 0)) return '';
