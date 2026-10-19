@@ -214,15 +214,54 @@
             font-size: 13px;
             text-align: center;
         }
+        .day-count { color: #888; font-weight: 400; font-size: 13px; margin-left: 6px; }
+        /* Language switch: top-right corner on wide screens; on phones it sits
+           in the flow above the title so it can never cover the heading. */
+        #lang-switch {
+            position: absolute;
+            top: 10px;
+            right: 12px;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 12px;
+        }
+        #lang-switch button {
+            background: none;
+            border: none;
+            color: #888;
+            font: inherit;
+            font-weight: 600;
+            min-width: 30px;
+            min-height: 28px;
+            padding: 4px 6px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        #lang-switch button:hover { color: #ddd; }
+        #lang-switch button[aria-pressed="true"] { color: #fff; background: #333; }
+        #lang-switch button:focus-visible { outline: 2px solid #0a84ff; outline-offset: 1px; }
+        #lang-switch .sep { color: #555; }
+        @media (max-width: 600px) {
+            #lang-switch {
+                position: static;
+                align-self: flex-end;
+                margin: 8px 12px 4px 0;
+            }
+        }
     </style>
 </head>
 <body>
-    <h1>Camera Stream</h1>
-    <div class="tab-bar">
-        <div class="tab active" id="tab-live">Live</div>
-        <div class="tab" id="tab-archive">Archive</div>
+    <div id="lang-switch" role="group" aria-label="Language" data-i18n-aria="webplayer_lang_switch_label">
+        <button type="button" data-lang="en" lang="en" aria-label="English" title="English" aria-pressed="true">EN</button><span class="sep" aria-hidden="true">|</span><button type="button" data-lang="ro" lang="ro" aria-label="Română" title="Română" aria-pressed="false">RO</button>
     </div>
-    <button id="archive-back-btn" onclick="backToArchiveList()">&larr; Back to list</button>
+    <h1 data-i18n="player_title">Camera Stream</h1>
+    <div class="tab-bar">
+        <div class="tab active" id="tab-live" data-i18n="player_tab_live">Live</div>
+        <div class="tab" id="tab-archive" data-i18n="player_tab_archive">Archive</div>
+    </div>
+    <button id="archive-back-btn" onclick="backToArchiveList()" data-i18n="webplayer_archive_back">&larr; Back to list</button>
     <div id="video-container">
         <video id="video" autoplay muted playsinline></video>
         <div id="telemetry-overlay">
@@ -231,39 +270,289 @@
         </div>
     </div>
     <div id="archive-container">
-        <div id="archive-usage">Loading archive...</div>
+        <div id="archive-usage" data-i18n="player_archive_loading">Loading archive…</div>
         <div id="archive-refreshed"></div>
         <div id="archive-list"></div>
-        <div id="archive-relay-msg" style="display:none;">
+        <div id="archive-relay-msg" style="display:none;" data-i18n-html="webplayer_archive_needs_direct">
             Archive viewing requires Direct signaling mode.<br>
             Switch in the camera app's Settings.
         </div>
     </div>
     <div id="status-bar">
-        <span id="state-pill" class="connecting">connecting</span>
-        <span id="status">Starting WebRTC...</span>
+        <span id="state-pill" class="connecting" data-i18n="player_pill_connecting">connecting</span>
+        <span id="status" data-i18n="player_status_starting">Starting WebRTC…</span>
     </div>
-    <button id="retry-btn">Retry</button>
-    <button id="download-log-btn">Download log</button>
+    <button id="retry-btn" data-i18n="player_btn_retry">Retry</button>
+    <button id="download-log-btn" data-i18n="player_btn_download_log">Download log</button>
     <div id="download-progress"></div>
-    <div id="camera-id-error">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
+    <div id="camera-id-error" data-i18n-html="webplayer_camera_id_missing">Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.</div>
 
     <div id="debug">
         <div class="row">
-            <div><span class="label">PC state:</span><span class="value" id="dbg-pc">-</span></div>
-            <div><span class="label">ICE state:</span><span class="value" id="dbg-ice">-</span></div>
-            <div><span class="label">Sig state:</span><span class="value" id="dbg-sig">-</span></div>
+            <div><span class="label" data-i18n="player_debug_pc_state">PC state:</span><span class="value" id="dbg-pc">-</span></div>
+            <div><span class="label" data-i18n="player_debug_ice_state">ICE state:</span><span class="value" id="dbg-ice">-</span></div>
+            <div><span class="label" data-i18n="player_debug_sig_state">Sig state:</span><span class="value" id="dbg-sig">-</span></div>
         </div>
         <div class="row">
-            <div><span class="label">Video track:</span><span class="value" id="dbg-track">none</span></div>
-            <div><span class="label">Bytes rcvd:</span><span class="value" id="dbg-bytes">0</span></div>
-            <div><span class="label">Pkts rcvd:</span><span class="value" id="dbg-pkts">0</span></div>
-            <div><span class="label">Attention:</span><span class="value ok" id="dbg-attention">visible</span></div>
-            <div><span class="label">Battery:</span><span class="value" id="dbg-battery">-</span></div>
-            <div><span class="label">Thermal:</span><span class="value" id="dbg-thermal">-</span></div>
+            <div><span class="label" data-i18n="player_debug_video_track">Video track:</span><span class="value" id="dbg-track" data-i18n="player_value_none">none</span></div>
+            <div><span class="label" data-i18n="player_debug_bytes_rcvd">Bytes rcvd:</span><span class="value" id="dbg-bytes">0</span></div>
+            <div><span class="label" data-i18n="player_debug_pkts_rcvd">Pkts rcvd:</span><span class="value" id="dbg-pkts">0</span></div>
+            <div><span class="label" data-i18n="player_debug_attention">Attention:</span><span class="value ok" id="dbg-attention" data-i18n="player_value_visible">visible</span></div>
+            <div><span class="label" data-i18n="player_debug_battery">Battery:</span><span class="value" id="dbg-battery">-</span></div>
+            <div><span class="label" data-i18n="player_debug_thermal">Thermal:</span><span class="value" id="dbg-thermal">-</span></div>
         </div>
         <div id="debug-log"></div>
     </div>
+
+    <script>
+    // ---- Localization (en, ro) ----
+    // The `en` object is the English source; the `ro` object is GENERATED from
+    // the Camera repo's docs/localization/strings.tsv by apply_ro.py (areas
+    // html-player + webplayer) - edit the TSV, not the `ro` block. Keys shared
+    // with the embedded Direct-mode player (player_*) say the same thing there.
+    // Plural keys are `<key>.one` / `.few` / `.other` (English: one/other).
+    /* I18N:BEGIN */
+    var I18N = {
+        en: {
+            "player_archive_empty": "No recordings yet.",
+            "player_archive_loading": "Loading archive…",
+            "player_archive_play": "Play",
+            "player_archive_unavailable": "Archive unavailable.",
+            "player_archive_usage": "Using {0} / {1} GB",
+            "player_btn_download_log": "Download log",
+            "player_btn_retry": "Retry",
+            "player_debug_attention": "Attention:",
+            "player_debug_battery": "Battery:",
+            "player_debug_bytes_rcvd": "Bytes rcvd:",
+            "player_debug_ice_state": "ICE state:",
+            "player_debug_pc_state": "PC state:",
+            "player_debug_pkts_rcvd": "Pkts rcvd:",
+            "player_debug_sig_state": "Sig state:",
+            "player_debug_thermal": "Thermal:",
+            "player_debug_video_track": "Video track:",
+            "player_pill_connected": "connected",
+            "player_pill_connecting": "connecting",
+            "player_pill_failed": "failed",
+            "player_status_connected": "Connected — receiving video",
+            "player_status_reconnecting": "Reconnecting in {0}s…",
+            "player_status_retrying": "Retrying ({0})…",
+            "player_status_starting": "Starting WebRTC…",
+            "player_tab_archive": "Archive",
+            "player_tab_live": "Live",
+            "player_title": "Camera Stream",
+            "player_value_hidden": "hidden",
+            "player_value_none": "none",
+            "player_value_visible": "visible",
+            "webplayer_archive_back": "← Back to list",
+            "webplayer_archive_badge_motion": "motion",
+            "webplayer_archive_day_clips.one": "{0} clip",
+            "webplayer_archive_day_clips.other": "{0} clips",
+            "webplayer_archive_needs_direct": "Archive viewing requires Direct signaling mode.<br>Switch in the camera app's Settings.",
+            "webplayer_archive_no_reply": "Camera didn’t respond.",
+            "webplayer_archive_no_reply_detail": "The camera did not answer the archive request.",
+            "webplayer_archive_size_mb": "{0} MB",
+            "webplayer_archive_updated": "Updated {0} · auto-refreshes every 15 s",
+            "webplayer_camera_id_missing": "Missing camera ID. Use the URL with <code>?cameraId=&lt;id&gt;</code> from the camera app.",
+            "webplayer_download_failed": "Download failed: {0}",
+            "webplayer_download_progress": "Downloading… {0} MB / {1} MB",
+            "webplayer_download_starting": "Downloading…",
+            "webplayer_lang_switch_label": "Language",
+            "webplayer_page_title": "Camera Stream — Relay",
+            "webplayer_pill_no_camera": "no camera",
+            "webplayer_reason_pc_disconnected": "PC disconnected",
+            "webplayer_reason_pc_failed": "PC failed",
+            "webplayer_reason_relay_closed": "Relay closed (code={0})",
+            "webplayer_status_answer_received": "Answer received; ICE connecting…",
+            "webplayer_status_camera_id_required": "Camera ID required",
+            "webplayer_status_connected_short": "Connected",
+            "webplayer_status_connection_failed": "Connection failed",
+            "webplayer_status_offer_error": "Offer error: {0}",
+            "webplayer_status_offer_sent": "Offer sent; waiting for answer…",
+            "webplayer_status_unstable": "Connection unstable — waiting for recovery…",
+            "webplayer_status_ws_open": "WebSocket open; creating offer…"
+        },
+        ro: {
+            "player_archive_empty": "Nicio înregistrare încă.",
+            "player_archive_loading": "Se încarcă arhiva…",
+            "player_archive_play": "Redă",
+            "player_archive_unavailable": "Arhivă indisponibilă.",
+            "player_archive_usage": "Se folosesc {0} / {1} GB",
+            "player_btn_download_log": "Descarcă jurnalul",
+            "player_btn_retry": "Reîncearcă",
+            "player_debug_attention": "Atenție:",
+            "player_debug_battery": "Baterie:",
+            "player_debug_bytes_rcvd": "Octeți primiți:",
+            "player_debug_ice_state": "Stare ICE:",
+            "player_debug_pc_state": "Stare PC:",
+            "player_debug_pkts_rcvd": "Pachete primite:",
+            "player_debug_sig_state": "Stare semnalizare:",
+            "player_debug_thermal": "Temperatură:",
+            "player_debug_video_track": "Pistă video:",
+            "player_pill_connected": "conectat",
+            "player_pill_connecting": "se conectează",
+            "player_pill_failed": "eșuat",
+            "player_status_connected": "Conectat — se primește video",
+            "player_status_reconnecting": "Reconectare în {0}s…",
+            "player_status_retrying": "Se reîncearcă ({0})…",
+            "player_status_starting": "Se pornește WebRTC…",
+            "player_tab_archive": "Arhivă",
+            "player_tab_live": "În direct",
+            "player_title": "Transmisie cameră",
+            "player_value_hidden": "ascuns",
+            "player_value_none": "niciuna",
+            "player_value_visible": "vizibil",
+            "webplayer_archive_back": "← Înapoi la listă",
+            "webplayer_archive_badge_motion": "mișcare",
+            "webplayer_archive_day_clips.few": "{0} clipuri",
+            "webplayer_archive_day_clips.one": "{0} clip",
+            "webplayer_archive_day_clips.other": "{0} de clipuri",
+            "webplayer_archive_needs_direct": "Arhiva se poate vedea doar în modul de semnalizare Direct.<br>Schimbă modul din setările aplicației camerei.",
+            "webplayer_archive_no_reply": "Camera nu a răspuns.",
+            "webplayer_archive_no_reply_detail": "Camera nu a răspuns la cererea pentru arhivă.",
+            "webplayer_archive_size_mb": "{0} MB",
+            "webplayer_archive_updated": "Actualizat la {0} · se reîmprospătează la fiecare 15 s",
+            "webplayer_camera_id_missing": "Lipsește ID-ul camerei. Folosește adresa cu <code>?cameraId=&lt;id&gt;</code> din aplicația camerei.",
+            "webplayer_download_failed": "Descărcarea a eșuat: {0}",
+            "webplayer_download_progress": "Se descarcă… {0} MB / {1} MB",
+            "webplayer_download_starting": "Se descarcă…",
+            "webplayer_lang_switch_label": "Limbă",
+            "webplayer_page_title": "Transmisie cameră — releu",
+            "webplayer_pill_no_camera": "fără cameră",
+            "webplayer_reason_pc_disconnected": "Conexiunea PC s-a întrerupt",
+            "webplayer_reason_pc_failed": "Conexiunea PC a eșuat",
+            "webplayer_reason_relay_closed": "Serverul releu a închis conexiunea (cod={0})",
+            "webplayer_status_answer_received": "Răspuns primit; se conectează ICE…",
+            "webplayer_status_camera_id_required": "Este necesar ID-ul camerei",
+            "webplayer_status_connected_short": "Conectat",
+            "webplayer_status_connection_failed": "Conexiunea a eșuat",
+            "webplayer_status_offer_error": "Eroare la ofertă: {0}",
+            "webplayer_status_offer_sent": "Ofertă trimisă; se așteaptă răspunsul…",
+            "webplayer_status_unstable": "Conexiune instabilă — se așteaptă restabilirea…",
+            "webplayer_status_ws_open": "WebSocket deschis; se creează oferta…"
+        }
+    };
+    /* I18N:END */
+
+    // Language precedence: (a) the user's toggle choice (localStorage
+    // `ss_lang`), (b) the `?lang=` URL parameter (the camera apps append the
+    // phone's UI language), (c) navigator.language (`ro*` -> ro), (d) English.
+    var LANG_STORAGE_KEY = 'ss_lang';
+    function matchLang(v) {
+        var m = /^(en|ro)(?:[-_]|$)/i.exec(String(v || ''));
+        return m ? m[1].toLowerCase() : null;
+    }
+    function readStoredLang() {
+        try { return matchLang(window.localStorage.getItem(LANG_STORAGE_KEY)); } catch (e) { return null; }
+    }
+    var LANG_SOURCE = 'default';
+    var LANG = (function() {
+        var s = readStoredLang();
+        if (s) { LANG_SOURCE = 'stored'; return s; }
+        var q = null;
+        try { q = matchLang(new URLSearchParams(location.search).get('lang')); } catch (e) {}
+        if (q) { LANG_SOURCE = 'url'; return q; }
+        if (/^ro/i.test(String(navigator.language || ''))) { LANG_SOURCE = 'navigator'; return 'ro'; }
+        return 'en';
+    })();
+
+    function fillArgs(s, args, from) {
+        for (var i = from; i < args.length; i++) s = s.split('{' + (i - from) + '}').join(String(args[i]));
+        return s;
+    }
+    function t(key) {
+        var d = I18N[LANG] || I18N.en;
+        var s = d[key] != null ? d[key] : I18N.en[key];
+        if (s == null) return key;
+        return fillArgs(s, arguments, 1);
+    }
+    // Plural category. Romanian (CLDR): one = 1; few = 0 or n % 100 in 1..19;
+    // other = the rest (carries "de": "20 de clipuri"). English: one / other.
+    function pluralCategory(n) {
+        if (LANG !== 'ro') return n === 1 ? 'one' : 'other';
+        var m = Math.abs(n) % 100;
+        if (n === 1) return 'one';
+        if (n === 0 || (m >= 1 && m <= 19)) return 'few';
+        return 'other';
+    }
+    // tPlural(key, n, extra...) -> {0} = n, {1}.. = extra args.
+    function tPlural(key, n) {
+        var cat = pluralCategory(n);
+        var d = I18N[LANG] || I18N.en;
+        var s = d[key + '.' + cat];
+        if (s == null && cat === 'few') s = d[key + '.other'];
+        if (s == null) s = I18N.en[key + '.' + (n === 1 ? 'one' : 'other')];
+        if (s == null) return key;
+        return fillArgs(s, arguments, 1);
+    }
+    // Decimal number with a fixed number of digits, locale decimal separator.
+    function fmtNum(x, digits) {
+        var s = Number(x).toFixed(digits);
+        return LANG === 'ro' ? s.replace('.', ',') : s;
+    }
+    function fmtTime(d) {
+        return LANG === 'ro' ? d.toLocaleTimeString('ro-RO') : d.toLocaleTimeString();
+    }
+
+    // Dynamic text: an element bound with i18nText/i18nHtml re-renders itself
+    // on a language change (status pill, status line, archive list, ...).
+    // i18nRaw() writes untranslated data (e.g. a track id) and unbinds.
+    var i18nBound = [];
+    function i18nBind(el, fn, html) {
+        if (!el) return;
+        el.removeAttribute('data-i18n');
+        el.removeAttribute('data-i18n-html');
+        el.__i18n = { fn: fn, html: !!html };
+        if (i18nBound.indexOf(el) < 0) i18nBound.push(el);
+        if (html) el.innerHTML = fn(); else el.textContent = fn();
+    }
+    function i18nText(el, fn) { i18nBind(el, fn, false); }
+    function i18nHtml(el, fn) { i18nBind(el, fn, true); }
+    function i18nRaw(el, text) {
+        if (!el) return;
+        el.removeAttribute('data-i18n');
+        el.removeAttribute('data-i18n-html');
+        el.__i18n = null;
+        el.textContent = text;
+    }
+
+    var i18nListeners = [];
+    function applyI18n() {
+        document.documentElement.lang = LANG;
+        document.title = t('webplayer_page_title');
+        var i, els = document.querySelectorAll('[data-i18n]');
+        for (i = 0; i < els.length; i++) els[i].textContent = t(els[i].getAttribute('data-i18n'));
+        els = document.querySelectorAll('[data-i18n-html]');
+        for (i = 0; i < els.length; i++) els[i].innerHTML = t(els[i].getAttribute('data-i18n-html'));
+        els = document.querySelectorAll('[data-i18n-aria]');
+        for (i = 0; i < els.length; i++) els[i].setAttribute('aria-label', t(els[i].getAttribute('data-i18n-aria')));
+        for (i = 0; i < i18nBound.length; i++) {
+            var b = i18nBound[i].__i18n;
+            if (!b) continue;
+            if (b.html) i18nBound[i].innerHTML = b.fn(); else i18nBound[i].textContent = b.fn();
+        }
+        var btns = document.querySelectorAll('#lang-switch button[data-lang]');
+        for (i = 0; i < btns.length; i++) btns[i].setAttribute('aria-pressed', btns[i].getAttribute('data-lang') === LANG ? 'true' : 'false');
+    }
+    // Live switch: re-renders text only; the WebRTC session is untouched.
+    function setLang(lang) {
+        lang = matchLang(lang);
+        if (!lang) return;
+        try { window.localStorage.setItem(LANG_STORAGE_KEY, lang); } catch (e) {}
+        var changed = lang !== LANG;
+        LANG = lang;
+        LANG_SOURCE = 'stored';
+        applyI18n();
+        if (changed) i18nListeners.forEach(function(fn) { try { fn(lang); } catch (_) {} });
+    }
+    (function() {
+        var btns = document.querySelectorAll('#lang-switch button[data-lang]');
+        for (var i = 0; i < btns.length; i++) {
+            btns[i].addEventListener('click', function() { setLang(this.getAttribute('data-lang')); });
+        }
+    })();
+    window.I18N = I18N; window.t = t; window.tPlural = tPlural; window.setLang = setLang;
+    applyI18n();
+    </script>
 
     <script>
     // ArchiveTransport — abstracts archive fetch over HTTP (Direct Mode) or
@@ -531,11 +820,11 @@
         }
 
         function logDebug(msg, level) {
-            var t = new Date().toLocaleTimeString();
+            var ts = new Date().toLocaleTimeString();
             var prefix = level === 'err' ? 'ERR ' :
                          level === 'warn' ? 'WARN ' :
                          level === 'ok' ? 'OK  ' : '    ';
-            var line = '[' + t + ' ' + fmtElapsed() + '] ' + prefix + msg;
+            var line = '[' + ts + ' ' + fmtElapsed() + '] ' + prefix + msg;
             if (level === 'err')      console.error(line);
             else if (level === 'warn') console.warn(line);
             else                       console.log(line);
@@ -672,8 +961,8 @@
 
         if (!cameraId) {
             pill.className = 'failed';
-            pill.textContent = 'no camera';
-            status.textContent = 'Camera ID required';
+            i18nText(pill, function() { return t('webplayer_pill_no_camera'); });
+            i18nText(status, function() { return t('webplayer_status_camera_id_required'); });
             cameraIdErr.style.display = 'block';
             return;
         }
@@ -708,7 +997,7 @@
             // it immediately even when the message is buffered (the camera
             // hasn't confirmed our peerId yet).
             if (dbg.attention) {
-                dbg.attention.textContent = active ? 'visible' : 'hidden';
+                i18nText(dbg.attention, function() { return t(active ? 'player_value_visible' : 'player_value_hidden'); });
                 dbg.attention.className = 'value ' + (active ? 'ok' : 'warn');
             }
             if (!ws || ws.readyState !== 1 || !assignedPeerId) {
@@ -722,7 +1011,8 @@
             } catch (e) { logWarn('sendAttention failed: ' + e.message); }
         }
         if (dbg.attention) {
-            dbg.attention.textContent = attentionActive ? 'visible' : 'hidden';
+            var initialAttention = attentionActive;
+            i18nText(dbg.attention, function() { return t(initialAttention ? 'player_value_visible' : 'player_value_hidden'); });
             dbg.attention.className = 'value ' + (attentionActive ? 'ok' : 'warn');
         }
         // Monotonic counter incremented on every connect() call. Each connect()
@@ -732,9 +1022,24 @@
         // candidates from a closed PC are no longer forwarded.
         var currentEpoch = 0;
 
+        // Pill state token ('connecting' | 'connected' | 'failed'): the CSS
+        // class and the logic key; the displayed text is translated.
+        var pillState = 'connecting';
         function setPill(state) {
+            pillState = state;
             pill.className = state;
-            pill.textContent = state;
+            i18nText(pill, function() { return t('player_pill_' + state); });
+        }
+        // Status line: a translated message, re-rendered on a language change.
+        function setStatus(fn) { i18nText(status, fn); }
+        // Display text for the internal scheduleReconnect() reason tokens
+        // (the English token itself stays in the debug log).
+        function reasonText(reason) {
+            if (reason === 'PC failed') return t('webplayer_reason_pc_failed');
+            if (reason === 'PC disconnected') return t('webplayer_reason_pc_disconnected');
+            var m = /^Relay closed \(code=(.*)\)$/.exec(reason);
+            if (m) return t('webplayer_reason_relay_closed', m[1]);
+            return reason;
         }
 
         function tokenQuery() {
@@ -805,17 +1110,20 @@
 
         function fetchArchiveIndex(quiet) {
             logDebug('fetchArchiveIndex: relayMode=' + isRelayMode + (quiet ? ' (auto-refresh)' : ''));
-            if (!quiet) archiveUsage.textContent = 'Loading archive...';
+            if (!quiet) i18nText(archiveUsage, function() { return t('player_archive_loading'); });
             startArchivePolling();
             var timeoutTimer = null;
             if (!quiet) {
                 timeoutTimer = setTimeout(function() {
                     timeoutTimer = null;
                     logWarn('Archive index: no reply from camera after 10 s');
-                    archiveUsage.textContent = 'Camera didn\u2019t respond.';
-                    archiveList.innerHTML = '<div style="color:#888;padding:20px;text-align:center;">' +
-                        'The camera did not answer the archive request.<br><br>' +
-                        '<button onclick="fetchArchiveIndex(false)" style="padding:8px 16px;">Retry</button></div>';
+                    i18nText(archiveUsage, function() { return t('webplayer_archive_no_reply'); });
+                    i18nHtml(archiveList, function() {
+                        return '<div style="color:#888;padding:20px;text-align:center;">' +
+                            escapeHtml(t('webplayer_archive_no_reply_detail')) + '<br><br>' +
+                            '<button onclick="fetchArchiveIndex(false)" style="padding:8px 16px;">' +
+                            escapeHtml(t('player_btn_retry')) + '</button></div>';
+                    });
                 }, 10000);
             }
             ArchiveTransport.fetchJson('/archive/index.json')
@@ -823,15 +1131,17 @@
                     if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
                     if (!quiet) logOk('Archive index loaded: ' + (data.days ? data.days.length : 0) + ' days');
                     renderArchive(data);
-                    document.getElementById('archive-refreshed').textContent =
-                        'Updated ' + new Date().toLocaleTimeString() + ' \u00b7 auto-refreshes every 15 s';
+                    var refreshedAt = new Date();
+                    i18nText(document.getElementById('archive-refreshed'), function() {
+                        return t('webplayer_archive_updated', fmtTime(refreshedAt));
+                    });
                 })
                 .catch(function(e) {
                     if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
                     logWarn('Failed to load archive index: ' + e.message);
                     if (quiet) return;
-                    archiveUsage.textContent = 'Archive unavailable.';
-                    archiveList.innerHTML = '';
+                    i18nText(archiveUsage, function() { return t('player_archive_unavailable'); });
+                    i18nRaw(archiveList, '');
                 });
         }
 
@@ -839,8 +1149,8 @@
 
         function formatDuration(ms) {
             if (ms == null || !(ms > 0)) return '';
-            var t = Math.round(ms / 1000);
-            var m = Math.floor(t / 60), sec = t % 60;
+            var secs = Math.round(ms / 1000);
+            var m = Math.floor(secs / 60), sec = secs % 60;
             return m + ':' + (sec < 10 ? '0' : '') + sec;
         }
 
@@ -881,33 +1191,39 @@
             switchTab('archive');
         };
 
+        // Rendered through i18nText/i18nHtml so a language change re-renders
+        // the usage line and the list from the last index (no re-fetch).
         function renderArchive(data) {
-            var usedGB = (data.usedBytes / 1e9).toFixed(2);
-            var maxGB = (data.maxBytes / 1e9).toFixed(2);
-            archiveUsage.textContent = 'Using ' + usedGB + ' / ' + maxGB + ' GB';
+            i18nText(archiveUsage, function() {
+                return t('player_archive_usage', fmtNum(data.usedBytes / 1e9, 2), fmtNum(data.maxBytes / 1e9, 2));
+            });
+            i18nHtml(archiveList, function() { return archiveListHtml(data); });
+        }
 
+        function archiveListHtml(data) {
             if (!data.days || data.days.length === 0) {
-                archiveList.innerHTML = '<div style="color:#888;padding:20px;text-align:center;">No recordings yet.</div>';
-                return;
+                return '<div style="color:#888;padding:20px;text-align:center;">' + escapeHtml(t('player_archive_empty')) + '</div>';
             }
 
             var html = '';
             data.days.forEach(function(day) {
-                html += '<div class="day-section"><div class="day-header">' + escapeHtml(day.date) + '</div>';
-                day.segments.forEach(function(seg) {
-                    var sizeMB = (seg.bytes / 1e6).toFixed(1);
+                var segs = day.segments || [];
+                html += '<div class="day-section"><div class="day-header">' + escapeHtml(day.date) +
+                    '<span class="day-count">' + escapeHtml(tPlural('webplayer_archive_day_clips', segs.length)) + '</span></div>';
+                segs.forEach(function(seg) {
+                    var sizeMB = fmtNum(seg.bytes / 1e6, 1);
                     var rot = (seg.rotation == null) ? 0 : (seg.rotation | 0);
                     var dur = formatDuration(seg.durationMs);
-                    var badge = (seg.trigger === 'motion') ? '<span class="segment-badge">motion</span>' : '';
+                    var badge = (seg.trigger === 'motion') ? '<span class="segment-badge">' + escapeHtml(t('webplayer_archive_badge_motion')) + '</span>' : '';
                     html += '<div class="segment-row" onclick="playSegment(\'' + seg.path + '\', ' + rot + ')">' +
                         '<span class="segment-info">' + escapeHtml(seg.start) +
                         (dur ? '<span class="segment-dur">' + dur + '</span>' : '') + badge +
-                        ' &middot; ' + sizeMB + ' MB</span>' +
-                        '<span class="segment-play">Play</span></div>';
+                        ' &middot; ' + escapeHtml(t('webplayer_archive_size_mb', sizeMB)) + '</span>' +
+                        '<span class="segment-play">' + escapeHtml(t('player_archive_play')) + '</span></div>';
                 });
                 html += '</div>';
             });
-            archiveList.innerHTML = html;
+            return html;
         }
 
         var _prevSegmentBlobURL = null;
@@ -947,12 +1263,11 @@
 
             if (isRelayMode) {
                 // Relay mode: fetch the segment blob via DataChannel, then play.
-                downloadProgress.textContent = 'Downloading…';
+                i18nText(downloadProgress, function() { return t('webplayer_download_starting'); });
                 downloadProgress.style.display = 'block';
                 ArchiveTransport.fetchSegment(path, function(received, total) {
-                    downloadProgress.textContent = 'Downloading… ' +
-                        Math.floor(received / 1024 / 1024) + ' MB / ' +
-                        Math.floor(total / 1024 / 1024) + ' MB';
+                    var rMB = Math.floor(received / 1024 / 1024), tMB = Math.floor(total / 1024 / 1024);
+                    i18nText(downloadProgress, function() { return t('webplayer_download_progress', rMB, tMB); });
                 }).then(function(blob) {
                     downloadProgress.style.display = 'none';
                     if (_prevSegmentBlobURL) {
@@ -963,7 +1278,8 @@
                     _prevSegmentBlobURL = url;
                     _startPlayback(url);
                 }).catch(function(e) {
-                    downloadProgress.textContent = 'Download failed: ' + e.message;
+                    var dlErr = e.message;
+                    i18nText(downloadProgress, function() { return t('webplayer_download_failed', dlErr); });
                     logErr('fetchSegment failed: ' + e.message);
                 });
             } else {
@@ -1023,7 +1339,7 @@
             retryBtn.style.display = 'none';
             document.getElementById('download-log-btn').style.display = 'inline-block';
             setPill('connecting');
-            status.textContent = attempt > 0 ? 'Retrying (' + attempt + ')...' : 'Starting WebRTC...';
+            setStatus(function() { return attempt > 0 ? t('player_status_retrying', attempt) : t('player_status_starting'); });
             assignedPeerId = null;
             if (statsTimer) {
                 logDebug('clearing previous statsTimer');
@@ -1031,7 +1347,7 @@
                 statsTimer = null;
             }
             // Don't clear debugLogLines — preserve history across reconnects.
-            dbg.track.textContent = 'none';
+            i18nText(dbg.track, function() { return t('player_value_none'); });
             dbg.bytes.textContent = '0';
             dbg.pkts.textContent = '0';
 
@@ -1057,12 +1373,12 @@
             // Mode + Archive tab) — the archive works over HTTP regardless and
             // an unsolicited log download mid-browse is just noise.
             var watchdogTimer = setTimeout(function() {
-                if (pill.textContent !== 'connected') {
+                if (pillState !== 'connected') {
                     if (!liveConnectivityVisibleToUser()) {
                         logDebug('WATCHDOG: peer not connected after 45s but user is on Archive tab in Direct Mode — archive is HTTP, skipping auto-download');
                         return;
                     }
-                    logErr('WATCHDOG: still not connected after 45s (pill=' + pill.textContent + ', pc=' + pc.connectionState + ', ice=' + pc.iceConnectionState + ', sig=' + pc.signalingState + ')');
+                    logErr('WATCHDOG: still not connected after 45s (pill=' + pillState + ', pc=' + pc.connectionState + ', ice=' + pc.iceConnectionState + ', sig=' + pc.signalingState + ')');
                     autoDownloadLog('connection timeout (45s)');
                 }
             }, 45000);
@@ -1141,9 +1457,9 @@
                 if (evt.track.kind === 'video') {
                     video.srcObject = evt.streams[0] || new MediaStream([evt.track]);
                     liveSrcObject = video.srcObject;
-                    dbg.track.textContent = evt.track.id;
+                    i18nRaw(dbg.track, evt.track.id);
                     setPill('connected');
-                    status.textContent = 'Connected — receiving video';
+                    setStatus(function() { return t('player_status_connected'); });
                 }
             };
 
@@ -1222,13 +1538,13 @@
                         pcDisconnectTimer = null;
                     }
                     setPill('connected');
-                    status.textContent = 'Connected';
+                    setStatus(function() { return t('webplayer_status_connected_short'); });
                 } else if (s === 'disconnected') {
                     var connectedFor = pcConnectedAt ? (Date.now() - pcConnectedAt) : -1;
                     logWarn('pc.connectionState -> disconnected (was connected for ' + connectedFor + 'ms; entering ' +
                             DISCONNECT_GRACE_MS + 'ms grace period)');
                     setPill('connecting');
-                    status.textContent = 'Connection unstable — waiting for recovery...';
+                    setStatus(function() { return t('webplayer_status_unstable'); });
                     if (!pcDisconnectTimer) {
                         pcDisconnectStartedAt = Date.now();
                         pcDisconnectTimer = setTimeout(function() {
@@ -1354,7 +1670,7 @@
                 if (isStale('ws.onopen')) return;
                 wsOpenedAt = Date.now();
                 logOk('WebSocket open (took ' + (wsOpenedAt - connectStartedAt) + 'ms from connect start)');
-                status.textContent = 'WebSocket open; creating offer...';
+                setStatus(function() { return t('webplayer_status_ws_open'); });
                 var offerStartedAt = Date.now();
                 thisPc.createOffer()
                     .then(function(offer) {
@@ -1370,7 +1686,7 @@
                             peerId: localPeerId,
                             sdp: thisPc.localDescription.sdp
                         }));
-                        status.textContent = 'Offer sent; waiting for answer...';
+                        setStatus(function() { return t('webplayer_status_offer_sent'); });
                         // Flush any local ICE candidates that were gathered before the WS opened.
                         if (pendingLocalCandidates.length > 0) {
                             logDebug('flushing ' + pendingLocalCandidates.length + ' buffered local ICE candidate(s)');
@@ -1394,7 +1710,8 @@
                         if (e && e.message === 'stale epoch') return;
                         logErr('createOffer/setLocalDescription failed: ' + e.message);
                         setPill('failed');
-                        status.textContent = 'Offer error: ' + e.message;
+                        var offerErr = e.message;
+                        setStatus(function() { return t('webplayer_status_offer_error', offerErr); });
                     });
             };
 
@@ -1434,7 +1751,7 @@
                         .then(function() {
                             if (myEpoch !== currentEpoch) return;
                             logOk('setRemoteDescription done — ICE will start');
-                            status.textContent = 'Answer received; ICE connecting...';
+                            setStatus(function() { return t('webplayer_status_answer_received'); });
                             // Flush remote candidates that arrived before the answer.
                             var queued = pendingRemoteCandidates.splice(0);
                             if (queued.length) logDebug('flushing ' + queued.length + ' queued remote ICE candidate(s)');
@@ -1492,7 +1809,7 @@
                     var delay = Math.pow(2, attempt) * 1000;
                     logWarn('scheduleReconnect: reason="' + reason + '" attempt=' + attempt +
                             '/' + MAX_RETRIES + ' delay=' + delay + 'ms');
-                    status.textContent = reason + '. Reconnecting in ' + (delay/1000) + 's...';
+                    setStatus(function() { return reasonText(reason) + '. ' + t('player_status_reconnecting', delay / 1000); });
                     setPill('connecting');
                     reconnectTimer = setTimeout(function() {
                         logDebug('reconnect timer fired — calling connect(' + (attempt + 1) + ')');
@@ -1509,7 +1826,7 @@
                 } else {
                     logErr('scheduleReconnect: max retries (' + MAX_RETRIES + ') exhausted, reason="' + reason + '"');
                     setPill('failed');
-                    status.textContent = 'Connection failed';
+                    setStatus(function() { return t('webplayer_status_connection_failed'); });
                     retryBtn.style.display = 'inline-block';
                     autoDownloadLog(reason + ' after max retries');
                 }
@@ -1563,6 +1880,8 @@
 
         logDebug('Page loaded at ' + new Date(pageLoadedAt).toISOString() +
                  ' — UA=' + navigator.userAgent.split(') ').slice(-1)[0]);
+        i18nListeners.push(function(lang) { logDebug('language -> ' + lang + ' (user toggle, saved)'); });
+        logDebug('language=' + LANG + ' (source=' + LANG_SOURCE + ')');
         logDebug('online=' + navigator.onLine + ' visibility=' + document.visibilityState +
                  ' cameraId=' + cameraId + ' relayMode=' + isRelayMode);
         connect(0);
